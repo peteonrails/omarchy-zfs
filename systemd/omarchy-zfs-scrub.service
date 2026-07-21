@@ -1,0 +1,14 @@
+[Unit]
+Description=ZFS scrub on all imported pools
+Documentation=man:zpool-scrub(8)
+ConditionPathExists=/sys/module/zfs
+After=zfs-import.target
+Wants=zfs-import.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/omarchy-zfs-scrub
+# zpool scrub kicks off the scrub and exits — we don't want systemd to think
+# the unit is still running, so no remain-after-exit.
+StandardOutput=journal
+StandardError=journal

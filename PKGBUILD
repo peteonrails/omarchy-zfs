@@ -1,0 +1,71 @@
+# Maintainer: Pete Jackson <pete@tern.travel>
+pkgname=omarchy-zfs
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Root-on-ZFS + ZFSBootMenu support layer for Omarchy (Quattro)"
+arch=('any')
+url="https://github.com/peteonrails/omarchy-zfs"
+license=('MIT')
+# Hard-dep omarchy (decision 7.1): one-command install of the full Quattro
+# stack plus the ZFS layer. omarchy-dev provides/conflicts omarchy, so this is
+# satisfied on any channel. Inert limine/snapper pulled in transitively are
+# masked/ignored by the .install.
+depends=(
+  'omarchy'
+  'zfs-dkms-git'
+  'zfs-utils-git'
+  'zfsbootmenu'
+  'sanoid'
+  'efibootmgr'
+)
+optdepends=(
+  'lzop: faster syncoid stream compression'
+  'mbuffer: syncoid network buffering'
+  'pv: syncoid transfer progress'
+)
+# autosnap.conf is admin-editable; never clobber it on upgrade.
+backup=('etc/omarchy-zfs/autosnap.conf')
+install="${pkgname}.install"
+# All payload lives in this repo alongside the PKGBUILD; nothing is fetched.
+source=()
+
+package() {
+  local S="$startdir"
+
+  # --- CLI tools -> /usr/bin ---
+  local bins=(
+    omarchy-fs-type omarchy-fs-zfs omarchy-fs-btrfs
+    omarchy-cmdline-add omarchy-refresh-zbm
+    omarchy-zfs-snapshot omarchy-zfs-scrub omarchy-zfs-kernel-compat-check
+    omarchy-zfs-autosnap omarchy-zfs-ensure-mkinitcpio
+    omarchy-zfs-hibernation-setup omarchy-zfs-hibernation-remove omarchy-zfs-hibernation-available
+    omarchy-bootstrap-zfs
+  )
+  local b
+  for b in "${bins[@]}"; do
+    install -Dm755 "$S/bin/$b" "$pkgdir/usr/bin/$b"
+  done
+
+  # --- pacman/libalpm hooks -> /usr/share/libalpm/hooks ---
+  local hooks=(
+    00-zfs-autosnap.hook
+    90-omarchy-zfs-kernel-guard.hook
+    zz-omarchy-zfs-ensure-mkinitcpio.hook
+  )
+  local h
+  for h in "${hooks[@]}"; do
+    install -Dm644 "$S/hooks/$h" "$pkgdir/usr/share/libalpm/hooks/$h"
+  done
+
+  # --- systemd units -> /usr/lib/systemd/system ---
+  install -Dm644 "$S/systemd/omarchy-zfs-scrub.service" "$pkgdir/usr/lib/systemd/system/omarchy-zfs-scrub.service"
+  install -Dm644 "$S/systemd/omarchy-zfs-scrub.timer"   "$pkgdir/usr/lib/systemd/system/omarchy-zfs-scrub.timer"
+
+  # --- ZFSBootMenu config reference + hooks -> /etc/zfsbootmenu ---
+  install -Dm644 "$S/zfsbootmenu/config.yaml.example" "$pkgdir/etc/zfsbootmenu/config.yaml.example"
+  install -Dm755 "$S/zfsbootmenu/hooks/load-key.d/01-omarchy-unlock.sh" "$pkgdir/etc/zfsbootmenu/hooks/load-key.d/01-omarchy-unlock.sh"
+  install -Dm755 "$S/zfsbootmenu/hooks/setup.d/01-omarchy-theme.sh"     "$pkgdir/etc/zfsbootmenu/hooks/setup.d/01-omarchy-theme.sh"
+
+  # --- default config -> /etc/omarchy-zfs ---
+  install -Dm644 "$S/config/autosnap.conf" "$pkgdir/etc/omarchy-zfs/autosnap.conf"
+}

@@ -1,0 +1,5 @@
+#!/bin/bash
+
+# omarchy:summary=Exit 0 if the root filesystem is ZFS.
+
+[[ $(omarchy-fs-type) == "zfs" ]]

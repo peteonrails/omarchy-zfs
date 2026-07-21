@@ -1,0 +1,11 @@
+# makepkg build artifacts
+/pkg/
+/src/
+*.pkg.tar.*
+*.log
+
+# local pacman repo output (Phase 2)
+/*.db
+/*.db.tar.*
+/*.files
+/*.files.tar.*

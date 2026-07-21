@@ -1,0 +1,23 @@
+# Re-assert the ZFS mkinitcpio hook AFTER every transaction that could have
+# clobbered it. `omarchy update` runs
+#   pacman -Syu --overwrite '*/etc/mkinitcpio.conf.d/omarchy_hooks.conf'
+# which replaces omarchy's HOOKS drop-in with the stock (zfs-less) version;
+# the kernel package's own 90-mkinitcpio-install hook then rebuilds the
+# initramfs without zfs -> unbootable root. The zz- prefix makes this run
+# LAST (after 90-mkinitcpio-install and any limine hook), so our regen wins.
+#
+# The script is a cheap no-op when nothing changed the effective HOOKS line.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Path
+Target = etc/mkinitcpio.conf.d/omarchy_hooks.conf
+Target = etc/mkinitcpio.conf
+Target = usr/lib/modules/*/vmlinuz
+
+[Action]
+Description = Ensuring ZFS hook is present in initramfs (omarchy-zfs)...
+When = PostTransaction
+Exec = /usr/bin/omarchy-zfs-ensure-mkinitcpio
+NeedsTargets

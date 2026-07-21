@@ -1,0 +1,32 @@
+# Example ZFSBootMenu configuration for omarchy.
+#
+# This file is NOT copied into place automatically by the omarchy installer
+# because ZBM is user-managed -- you already have a working ZBM setup if
+# you're running omarchy on ZFS. Use this as a reference for the changes
+# omarchy's hooks and branding expect.
+#
+# Copy to /etc/zfsbootmenu/config.yaml and run `generate-zbm` to rebuild.
+
+Global:
+  ManageImages: true
+  BootMountPoint: /boot/efi
+  InitCPIO: true
+  # Point ZBM at omarchy's hooks so the Tokyo Night theme and branded
+  # unlock screen are baked into the EFI image.
+  PreHooksDir: /etc/zfsbootmenu/hooks
+
+Components:
+  Enabled: false  # not using separate kernel+initramfs components
+
+EFI:
+  Enabled: true
+  ImageDir: /boot/efi/EFI/zbm
+  Versions: 2
+  # Optional: BMP splash image shown by systemd-stub before ZBM's TUI
+  # starts. Useful for a branded boot experience during UKI stub load.
+  # Must be a BMP file. Common path: /etc/zfsbootmenu/splash.bmp
+  # SplashImage: /etc/zfsbootmenu/splash.bmp
+
+Kernel:
+  # quiet loglevel=0 suppresses kernel messages for a cleaner UX
+  CommandLine: quiet loglevel=0 zbm.skip_hooks=

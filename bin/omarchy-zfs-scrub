@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# omarchy:summary=Run zpool scrub on every imported ZFS pool.
+# omarchy:requires-sudo=true
+#
+# Designed to be invoked by omarchy-zfs-scrub.service (monthly timer) but
+# also safe to run by hand. zpool scrub starts the scrub and returns
+# immediately — the scrub itself runs in the kernel for hours. We skip pools
+# that already have a scrub in progress so a missed-then-replayed timer fire
+# doesn't double-trigger.
+
+set -e
+
+if ! command -v zpool &>/dev/null; then
+  echo "omarchy-zfs-scrub: zpool not found, skipping" >&2
+  exit 0
+fi
+
+mapfile -t pools < <(zpool list -H -o name 2>/dev/null)
+if (( ${#pools[@]} == 0 )); then
+  echo "omarchy-zfs-scrub: no imported pools, nothing to do"
+  exit 0
+fi
+
+for pool in "${pools[@]}"; do
+  if zpool status "$pool" 2>/dev/null | grep -q 'scrub in progress'; then
+    echo "omarchy-zfs-scrub: scrub already in progress on $pool, skipping"
+    continue
+  fi
+  echo "omarchy-zfs-scrub: starting scrub on $pool"
+  zpool scrub "$pool"
+done

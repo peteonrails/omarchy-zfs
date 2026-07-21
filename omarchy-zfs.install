@@ -1,0 +1,109 @@
+# omarchy-zfs package install scriptlet.
+# Runs as root; no sudo needed. All internal pacman calls set
+# OMARCHY_ALLOW_DIRECT_PACMAN=1 so the Quattro update guard doesn't reject them.
+
+ARCHZFS_KEY="DDF7DB817396A49B2A2723F7403BD972F75D9D76"
+
+_is_zfs_root() {
+  [[ "$(findmnt -n -o FSTYPE / 2>/dev/null || true)" == "zfs" ]]
+}
+
+_configure_archzfs() {
+  # Skip if some ZFS-providing repo is already configured.
+  if grep -qE '^\[(archzfs|cachyos|cachyos-v3|cachyos-v4|chaotic-aur)\]' /etc/pacman.conf; then
+    return 0
+  fi
+  echo ":: omarchy-zfs: configuring [archzfs] package source"
+  if ! pacman-key --list-keys "$ARCHZFS_KEY" &>/dev/null; then
+    pacman-key --recv-keys "$ARCHZFS_KEY" || return 0
+    pacman-key --lsign-key "$ARCHZFS_KEY" || return 0
+  fi
+  cat >>/etc/pacman.conf <<'EOF'
+
+# Added by omarchy-zfs -- canonical ZFS package source
+[archzfs]
+Server = https://archzfs.com/$repo/$arch
+EOF
+  OMARCHY_ALLOW_DIRECT_PACMAN=1 pacman -Sy --noconfirm || true
+}
+
+_ensure_hostid() {
+  # zfs's mkinitcpio install hook only embeds /etc/hostid `if [[ -f ... ]]`.
+  # Without it, pool import can misbehave. Generate one if missing.
+  if [[ ! -f /etc/hostid ]] && command -v zgenhostid &>/dev/null; then
+    echo ":: omarchy-zfs: generating /etc/hostid (hardens pool import)"
+    zgenhostid || true
+  fi
+}
+
+_mask_limine_snapper() {
+  # Our omarchy dep drags in limine-snapper-sync; on ZFS it's inert. Mask it
+  # so it doesn't error on a system with no snapper config.
+  if systemctl list-unit-files limine-snapper-sync.service &>/dev/null; then
+    systemctl mask limine-snapper-sync.service &>/dev/null || true
+  fi
+}
+
+_warn_bootorder() {
+  # Do NOT auto-reorder (decision 7.5: mask-and-ignore, revisit after testing).
+  # Just warn if ZFSBootMenu isn't the first boot entry, so the admin notices
+  # if installing limine stole the top NVRAM slot.
+  command -v efibootmgr &>/dev/null || return 0
+  local order first firstlabel
+  order="$(efibootmgr 2>/dev/null | sed -n 's/^BootOrder: //p' | cut -d, -f1)"
+  [[ -n "$order" ]] || return 0
+  firstlabel="$(efibootmgr 2>/dev/null | grep -i "^Boot${order}" || true)"
+  if [[ -n "$firstlabel" && "$firstlabel" != *[Zz][Bb][Mm]* && "$firstlabel" != *ZFSBootMenu* ]]; then
+    echo ":: omarchy-zfs: WARNING - first EFI boot entry is not ZFSBootMenu:"
+    echo "     $firstlabel"
+    echo "     If the system won't boot into ZBM, re-assert BootOrder with efibootmgr."
+  fi
+}
+
+_common() {
+  if ! _is_zfs_root; then
+    echo ":: omarchy-zfs: root is not ZFS -- ZFS tooling installed but inactive."
+    return 0
+  fi
+  _configure_archzfs
+  _ensure_hostid
+  _mask_limine_snapper
+  # Re-assert the zfs mkinitcpio hook and regenerate initramfs + ZBM.
+  if command -v omarchy-zfs-ensure-mkinitcpio &>/dev/null; then
+    omarchy-zfs-ensure-mkinitcpio || true
+  fi
+  systemctl enable --now omarchy-zfs-scrub.timer &>/dev/null || true
+  _warn_bootorder
+}
+
+post_install() {
+  _common
+  cat <<'EOF'
+
+omarchy-zfs installed.
+  * Pre-upgrade snapshots:   00-zfs-autosnap.hook (config: /etc/omarchy-zfs/autosnap.conf)
+  * Kernel/zfs-dkms guard:   90-omarchy-zfs-kernel-guard.hook
+  * Initramfs self-heal:     zz-omarchy-zfs-ensure-mkinitcpio.hook (runs after every upgrade)
+  * Monthly scrub:           omarchy-zfs-scrub.timer (enabled)
+  * ZBM config reference:    /etc/zfsbootmenu/config.yaml.example
+  * Hibernation (ZFS zvol):  omarchy-zfs-hibernation-{setup,remove,available}
+
+Verify before your next reboot:
+  lsinitcpio /boot/initramfs-linux.img | grep -q zfs   && echo "zfs hook present"
+EOF
+}
+
+post_upgrade() {
+  _common
+}
+
+post_remove() {
+  systemctl disable --now omarchy-zfs-scrub.timer &>/dev/null || true
+  systemctl unmask limine-snapper-sync.service &>/dev/null || true
+  if [[ "$(findmnt -n -o FSTYPE / 2>/dev/null || true)" == "zfs" ]]; then
+    echo ":: omarchy-zfs: NOTE - leaving /etc/mkinitcpio.conf.d/zz-omarchy-zfs.conf in place."
+    echo "   Removing it and regenerating the initramfs on a ZFS root would drop the"
+    echo "   zfs hook and make the system unbootable. Remove it by hand only if you are"
+    echo "   migrating off ZFS."
+  fi
+}

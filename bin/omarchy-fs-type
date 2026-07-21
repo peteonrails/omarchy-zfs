@@ -1,0 +1,5 @@
+#!/bin/bash
+
+# omarchy:summary=Print the root filesystem type (btrfs, zfs, ext4, ...).
+
+findmnt -n -o FSTYPE /

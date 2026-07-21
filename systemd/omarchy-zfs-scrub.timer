@@ -1,0 +1,13 @@
+[Unit]
+Description=Monthly ZFS scrub on all imported pools
+Documentation=man:zpool-scrub(8)
+
+[Timer]
+# First day of every month at 02:00. Persistent=true means a missed run
+# (machine off when the timer fired) will run on next boot.
+OnCalendar=*-*-01 02:00:00
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

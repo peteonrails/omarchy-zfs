@@ -1,0 +1,77 @@
+#!/bin/bash
+
+# omarchy:summary=Create or restore system snapshots on ZFS-on-root.
+# omarchy:args=<create|restore>
+# omarchy:requires-sudo=true
+#
+# Counterpart to upstream's btrfs/snapper-based omarchy-snapshot. Lives in
+# its own file (rather than a branch inside omarchy-snapshot) so upstream
+# changes to the snapper logic don't conflict with our ZFS code on every
+# fork sync.
+
+set -e
+
+COMMAND="$1"
+
+if [[ -z $COMMAND ]]; then
+  echo "Usage: omarchy-zfs-snapshot <create|restore>" >&2
+  exit 1
+fi
+
+# No-op if not on ZFS — exit 127 so omarchy-update's snapshot phase can
+# uniformly call both omarchy-snapshot and omarchy-zfs-snapshot without
+# caring which one is actually applicable on this host.
+if ! omarchy-fs-zfs; then
+  exit 127
+fi
+
+if ! command -v zfs &>/dev/null; then
+  exit 127
+fi
+
+POOL=$(zfs list -H -o name / | cut -d/ -f1)
+
+case "$COMMAND" in
+create)
+  DESC="$(omarchy-version)"
+  TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+  SNAP_NAME="${TIMESTAMP}_${DESC// /-}"
+
+  echo -e "\e[32mCreate ZFS system snapshot\e[0m"
+
+  # Build list of datasets to snapshot, skipping anything marked
+  # com.sun:auto-snapshot=false (e.g. swap zvols, where snapshots are
+  # both useless for rollback AND wasteful — they pin freed swap pages
+  # in ARC). `zfs snapshot -r` doesn't honor the property; only tools
+  # like sanoid / zfs-auto-snapshot do, so we filter explicitly.
+  mapfile -t SNAPSHOT_TARGETS < <(
+    sudo zfs list -H -o name,com.sun:auto-snapshot -t filesystem,volume -r "$POOL" | \
+      awk -v sn="$SNAP_NAME" '$2 != "false" {print $1"@"sn}'
+  )
+
+  if (( ${#SNAPSHOT_TARGETS[@]} == 0 )); then
+    echo "No datasets to snapshot" >&2
+    exit 1
+  fi
+
+  # Single atomic snapshot operation across the included datasets.
+  sudo zfs snapshot "${SNAPSHOT_TARGETS[@]}"
+  echo
+  ;;
+restore)
+  DATASET=$(zfs list -H -o name /)
+  SNAP=$(sudo zfs list -t snapshot -H -o name -s creation "$DATASET" | \
+    gum choose --header "Select snapshot to restore")
+
+  if [[ -n $SNAP ]]; then
+    if gum confirm "Rollback to $SNAP? This will destroy later snapshots."; then
+      sudo zfs rollback -r "$SNAP"
+      echo "Rollback complete. Reboot recommended."
+    fi
+  fi
+  ;;
+*)
+  echo "Usage: omarchy-zfs-snapshot <create|restore>" >&2
+  exit 1
+  ;;
+esac

@@ -1,0 +1,101 @@
+#!/bin/bash
+
+# omarchy:summary=Remove hibernation setup including swap and boot resume settings
+# omarchy:requires-sudo=true
+
+MKINITCPIO_CONF="/etc/mkinitcpio.conf.d/omarchy_resume.conf"
+
+# Check if hibernation is configured
+if [[ ! -f $MKINITCPIO_CONF ]] || ! grep -q "^HOOKS+=(resume)$" "$MKINITCPIO_CONF"; then
+  echo "Hibernation is not set up"
+  exit 0
+fi
+
+if ! gum confirm "Remove hibernation setup?"; then
+  exit 0
+fi
+
+if omarchy-fs-zfs; then
+  POOL=$(zfs list -H -o name / | cut -d/ -f1)
+  ZVOL_NAME="${POOL}/swap"
+  SWAP_DEVICE="/dev/zvol/${ZVOL_NAME}"
+
+  # Disable swap if active
+  if swapon --show | grep -q "$SWAP_DEVICE"; then
+    echo "Disabling swap on $SWAP_DEVICE"
+    sudo swapoff "$SWAP_DEVICE"
+  fi
+
+  # Destroy swap zvol
+  if zfs list "$ZVOL_NAME" &>/dev/null; then
+    echo "Destroying ZFS swap zvol $ZVOL_NAME"
+    sudo zfs destroy "$ZVOL_NAME"
+  fi
+
+  # Remove fstab entry
+  if grep -Fq "$SWAP_DEVICE" /etc/fstab; then
+    echo "Removing swap zvol from /etc/fstab"
+    sudo cp -a /etc/fstab "/etc/fstab.$(date +%Y%m%d%H%M%S).back"
+    sudo sed -i "\|$SWAP_DEVICE|d" /etc/fstab
+    sudo sed -i '/^# ZFS zvol for system hibernation$/d' /etc/fstab
+  fi
+
+  # Remove resume param from ZFS cmdline property
+  DATASET=$(zfs list -H -o name /)
+  CURRENT=$(zfs get -H -o value org.zfsbootmenu:commandline "$DATASET" 2>/dev/null)
+  if [[ $CURRENT != "-" && $CURRENT == *"resume="* ]]; then
+    NEW_CMDLINE=$(echo "$CURRENT" | sed "s| *resume=$SWAP_DEVICE||g; s| *rtc_cmos.use_acpi_alarm=1||g")
+    sudo zfs set "org.zfsbootmenu:commandline=$NEW_CMDLINE" "$DATASET"
+  fi
+
+else
+  SWAP_SUBVOLUME="/swap"
+  SWAP_FILE="$SWAP_SUBVOLUME/swapfile"
+
+  # Disable swap if active
+  if swapon --show | grep -q "$SWAP_FILE"; then
+    echo "Disabling swap on $SWAP_FILE"
+    sudo swapoff "$SWAP_FILE"
+  fi
+
+  # Remove swapfile
+  if [[ -f $SWAP_FILE ]]; then
+    echo "Removing swapfile"
+    sudo rm "$SWAP_FILE"
+  fi
+
+  # Remove swap subvolume
+  if sudo btrfs subvolume show "$SWAP_SUBVOLUME" &>/dev/null; then
+    echo "Removing Btrfs subvolume $SWAP_SUBVOLUME"
+    sudo btrfs subvolume delete "$SWAP_SUBVOLUME"
+  fi
+
+  # Remove fstab entry
+  if grep -Fq "$SWAP_FILE" /etc/fstab; then
+    echo "Removing swapfile from /etc/fstab"
+    sudo cp -a /etc/fstab "/etc/fstab.$(date +%Y%m%d%H%M%S).back"
+    sudo sed -i "\|$SWAP_FILE|d" /etc/fstab
+    sudo sed -i '/^# Btrfs swapfile for system hibernation$/d' /etc/fstab
+  fi
+fi
+
+# Remove suspend-then-hibernate configuration
+echo "Removing suspend-then-hibernate configuration"
+sudo rm -f /etc/systemd/logind.conf.d/lid.conf
+sudo rm -f /etc/systemd/sleep.conf.d/hibernate.conf
+
+# Remove mkinitcpio resume hook
+echo "Removing resume hook"
+sudo rm "$MKINITCPIO_CONF"
+
+echo "Regenerating initramfs..."
+if omarchy-fs-zfs; then
+  sudo mkinitcpio -P
+  if command -v generate-zbm &>/dev/null; then
+    sudo generate-zbm
+  fi
+else
+  sudo limine-mkinitcpio
+fi
+
+echo "Hibernation removed"

@@ -1,0 +1,89 @@
+#!/bin/bash
+
+# omarchy:summary=Verify zfs-dkms can build against the installed or candidate Linux kernel.
+# omarchy:args=[installed|candidate]
+#
+# Exits 0 if the check passes (or the system is non-ZFS, or data is missing).
+# Exits 1 if the check fails — kernel exceeds zfs-dkms's Linux-Maximum.
+#
+# Used by:
+#   - /etc/pacman.d/hooks/90-omarchy-zfs-kernel-guard.hook (PreTransaction, mode=candidate)
+#   - bin/omarchy-refresh-zbm and friends (mode=installed) before invoking mkinitcpio
+#
+# Bypass with OMARCHY_SKIP_ZFS_KERNEL_CHECK=1 if you're absolutely sure (DANGEROUS).
+
+set -e
+
+mode="${1:-installed}"
+
+# Non-ZFS systems are never blocked by this check.
+if ! command -v omarchy-fs-zfs &>/dev/null || ! omarchy-fs-zfs 2>/dev/null; then
+  # Fallback for the hook context where omarchy-fs-zfs may not be on PATH:
+  fs=$(findmnt -no FSTYPE / 2>/dev/null || true)
+  [[ $fs == zfs ]] || exit 0
+fi
+
+if [[ -n ${OMARCHY_SKIP_ZFS_KERNEL_CHECK:-} ]]; then
+  echo "omarchy-zfs-kernel-compat-check: SKIPPED (OMARCHY_SKIP_ZFS_KERNEL_CHECK set)" >&2
+  exit 0
+fi
+
+# Resolve target kernel version (the X.Y portion is what matters)
+case "$mode" in
+  installed)
+    pkgver=$(pacman -Q linux 2>/dev/null | awk '{print $2}')
+    label="installed kernel"
+    ;;
+  candidate)
+    pkgver=$(pacman -Si linux 2>/dev/null | awk '/^Version/ {print $3; exit}')
+    label="candidate kernel"
+    ;;
+  *)
+    echo "Usage: $(basename "$0") [installed|candidate]" >&2
+    exit 2
+    ;;
+esac
+
+if [[ -z $pkgver ]]; then
+  echo "omarchy-zfs-kernel-compat-check: could not determine $label, skipping" >&2
+  exit 0
+fi
+
+# Strip everything from ".arch" onward to get a plain X.Y.Z (e.g. 7.0.3.arch1-2 -> 7.0.3)
+target_xyz="${pkgver%%.arch*}"
+target_xy="${target_xyz%.*}"  # 7.0.3 -> 7.0
+
+# Read zfs-dkms's META file for Linux-Maximum
+meta=$(grep -hE '^Linux-Maximum:' /usr/src/zfs-*/META 2>/dev/null | awk '{print $2}' | head -1)
+if [[ -z $meta ]]; then
+  echo "omarchy-zfs-kernel-compat-check: could not parse zfs-dkms Linux-Maximum, skipping" >&2
+  exit 0
+fi
+
+# OK if target_xy <= meta (lexicographic version compare)
+if printf '%s\n%s\n' "$target_xy" "$meta" | sort -V | tail -1 | grep -qFx "$meta"; then
+  exit 0
+fi
+
+# Failed
+cat >&2 <<EOF
+
+╔════════════════════════════════════════════════════════════════════════╗
+║  ABORT: ZFS kernel compatibility check failed                          ║
+╠════════════════════════════════════════════════════════════════════════╣
+║  ${label}: ${pkgver}
+║  zfs-dkms Linux-Maximum: ${meta}
+║                                                                        ║
+║  Building zfs against this kernel will fail.                           ║
+║  Proceeding would leave the system unbootable on next restart.         ║
+║                                                                        ║
+║  To fix:                                                               ║
+║    1. Wait for archzfs to release a zfs-dkms supporting ${target_xy}
+║    2. Pin the current kernel:                                          ║
+║         sudo sed -i 's|^#\\?IgnorePkg.*|IgnorePkg = linux linux-headers|' /etc/pacman.conf
+║                                                                        ║
+║  To bypass (DANGEROUS, may produce an unbootable system):              ║
+║    OMARCHY_SKIP_ZFS_KERNEL_CHECK=1 <command>                           ║
+╚════════════════════════════════════════════════════════════════════════╝
+EOF
+exit 1

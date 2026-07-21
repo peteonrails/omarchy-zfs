@@ -1,0 +1,17 @@
+# Take a recursive ZFS snapshot of the root pool before every pacman Upgrade,
+# so a bad update can be rolled back from ZFSBootMenu. Layout-agnostic and
+# self-pruning -- see /usr/bin/omarchy-zfs-autosnap and
+# /etc/omarchy-zfs/autosnap.conf.
+#
+# NOTE: not AbortOnFail. A snapshot failure should not block security updates;
+# omarchy-zfs-autosnap logs and exits non-fatally on any real problem.
+
+[Trigger]
+Operation = Upgrade
+Type = Package
+Target = *
+
+[Action]
+Description = Creating ZFS snapshot before upgrade (omarchy-zfs)...
+When = PreTransaction
+Exec = /usr/bin/omarchy-zfs-autosnap

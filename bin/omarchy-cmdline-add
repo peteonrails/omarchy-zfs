@@ -1,0 +1,34 @@
+#!/bin/bash
+
+# omarchy:summary=Add kernel command line parameters in a bootloader-agnostic way.
+# omarchy:args=<param> [drop-in-name]
+# omarchy:requires-sudo=true
+#
+# On btrfs/Limine: writes to /etc/limine-entry-tool.d/ and appends to /etc/default/limine.
+# On ZFS/ZBM: sets the org.zfsbootmenu:commandline property on the root dataset.
+# Example: omarchy-cmdline-add "intel_iommu=on iommu=pt" t2-mac
+
+PARAM="$1"
+DROPIN_NAME="${2:-custom}"
+
+if [[ -z $PARAM ]]; then
+  echo "Usage: omarchy-cmdline-add <param> [drop-in-name]" >&2
+  exit 1
+fi
+
+if omarchy-fs-zfs; then
+  DATASET=$(zfs list -H -o name /)
+  CURRENT=$(zfs get -H -o value org.zfsbootmenu:commandline "$DATASET" 2>/dev/null)
+  [[ $CURRENT == "-" ]] && CURRENT=""
+
+  if [[ $CURRENT != *"$PARAM"* ]]; then
+    sudo zfs set "org.zfsbootmenu:commandline=${CURRENT:+$CURRENT }$PARAM" "$DATASET"
+  fi
+else
+  sudo mkdir -p /etc/limine-entry-tool.d
+  echo "KERNEL_CMDLINE[default]+=\" $PARAM\"" | sudo tee "/etc/limine-entry-tool.d/${DROPIN_NAME}.conf" >/dev/null
+
+  if [[ -f /etc/default/limine ]] && ! grep -qF "$PARAM" /etc/default/limine; then
+    echo "KERNEL_CMDLINE[default]+=\" $PARAM\"" | sudo tee -a /etc/default/limine >/dev/null
+  fi
+fi

@@ -1,0 +1,23 @@
+# Block kernel upgrades when zfs-dkms cannot build against the candidate kernel.
+# Without this guard, pacman -Syu silently produces an unbootable initramfs
+# (the kernel package's own 90-mkinitcpio-install.hook regenerates initramfs
+# without the ZFS module if zfs-dkms's Linux-Maximum is below the new kernel).
+#
+# To bypass (only if you're recovering or know what you're doing):
+#   OMARCHY_SKIP_ZFS_KERNEL_CHECK=1 sudo -E pacman -Syu
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = linux
+Target = linux-lts
+Target = linux-zen
+Target = linux-hardened
+Target = linux-ptl
+
+[Action]
+Description = Verifying ZFS-on-ZBM kernel compatibility...
+When = PreTransaction
+Exec = /usr/bin/omarchy-zfs-kernel-compat-check candidate
+AbortOnFail

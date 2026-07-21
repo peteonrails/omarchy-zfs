@@ -1,0 +1,16 @@
+#!/bin/bash
+
+# omarchy:summary=Rebuild initramfs and regenerate ZFSBootMenu if available.
+# omarchy:requires-sudo=true
+
+# Defensive: refuse to rebuild if zfs-dkms can't build for the installed kernel.
+# An mkinitcpio -P run without a working zfs.ko produces an unbootable initramfs.
+omarchy-zfs-kernel-compat-check installed || exit 1
+
+echo "Rebuilding initramfs"
+sudo mkinitcpio -P
+
+if command -v generate-zbm &>/dev/null; then
+  echo "Regenerating ZFSBootMenu"
+  sudo generate-zbm
+fi

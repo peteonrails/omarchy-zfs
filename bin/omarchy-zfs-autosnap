@@ -1,0 +1,86 @@
+#!/bin/bash
+
+# omarchy:summary=Take a pre-upgrade ZFS snapshot of the root pool, with retention.
+# omarchy:requires-sudo=true
+#
+# Invoked by 00-zfs-autosnap.hook (PreTransaction) before every pacman
+# Upgrade, and safe to run by hand. Layout-agnostic: it discovers the pool
+# backing the root dataset dynamically, so it works on the legacy
+# rpool/omarchy/root layout AND the greenfield zroot layout without config.
+#
+# Optional config: /etc/omarchy-zfs/autosnap.conf (sourced) may set:
+#   OMARCHY_ZFS_AUTOSNAP=0        disable (skip entirely)
+#   OMARCHY_ZFS_AUTOSNAP_KEEP=N   how many autosnaps to retain (default 10)
+#   OMARCHY_ZFS_AUTOSNAP_POOL=X   force a specific pool (default: pool of /)
+
+set -euo pipefail
+
+CONF="/etc/omarchy-zfs/autosnap.conf"
+KEEP_DEFAULT=10
+TAG="omarchy-autosnap"
+
+OMARCHY_ZFS_AUTOSNAP=1
+OMARCHY_ZFS_AUTOSNAP_KEEP="$KEEP_DEFAULT"
+OMARCHY_ZFS_AUTOSNAP_POOL=""
+# shellcheck source=/dev/null
+[[ -r "$CONF" ]] && source "$CONF"
+
+[[ "$OMARCHY_ZFS_AUTOSNAP" == "0" ]] && { echo "omarchy-zfs-autosnap: disabled via $CONF"; exit 0; }
+
+# Skip on non-ZFS or live media.
+fs="$(findmnt -n -o FSTYPE / 2>/dev/null || true)"
+[[ "$fs" == "zfs" ]] || exit 0
+command -v zfs &>/dev/null || exit 0
+
+# Discover the pool of the root dataset unless one was forced.
+POOL="$OMARCHY_ZFS_AUTOSNAP_POOL"
+if [[ -z "$POOL" ]]; then
+  POOL="$(zfs list -H -o name / 2>/dev/null | cut -d/ -f1)"
+fi
+if [[ -z "$POOL" ]]; then
+  echo "omarchy-zfs-autosnap: could not determine root pool, skipping" >&2
+  exit 0
+fi
+
+# Snapshot name: sortable timestamp + tag so pruning can target only ours.
+# No Date.now() concern here -- this is a real shell, `date` is fine.
+stamp="$(date +%Y-%m-%d_%H%M%S)"
+snap="${TAG}_${stamp}"
+
+# Build the target list, skipping datasets/zvols marked
+# com.sun:auto-snapshot=false (e.g. swap zvols). `zfs snapshot -r` ignores
+# that property, so we filter explicitly and take one atomic snapshot.
+mapfile -t targets < <(
+  zfs list -H -o name,com.sun:auto-snapshot -t filesystem,volume -r "$POOL" 2>/dev/null |
+    awk -v s="@$snap" '$2 != "false" {print $1 s}'
+)
+
+if (( ${#targets[@]} == 0 )); then
+  echo "omarchy-zfs-autosnap: no eligible datasets under $POOL, skipping" >&2
+  exit 0
+fi
+
+echo "omarchy-zfs-autosnap: snapshotting $POOL @ $snap (${#targets[@]} datasets)"
+zfs snapshot "${targets[@]}"
+
+# Prune old autosnaps on the root dataset, oldest first, keeping KEEP.
+keep="${OMARCHY_ZFS_AUTOSNAP_KEEP:-$KEEP_DEFAULT}"
+[[ "$keep" =~ ^[0-9]+$ ]] || keep="$KEEP_DEFAULT"
+
+root_ds="$(zfs list -H -o name / 2>/dev/null)"
+mapfile -t ours < <(
+  zfs list -H -o name -t snapshot -s creation "$root_ds" 2>/dev/null |
+    grep -E "@${TAG}_" || true
+)
+
+excess=$(( ${#ours[@]} - keep ))
+if (( excess > 0 )); then
+  for ((i = 0; i < excess; i++)); do
+    # Destroy recursively so child datasets' matching snapshots go too.
+    snapname="${ours[$i]#*@}"
+    echo "omarchy-zfs-autosnap: pruning @$snapname"
+    zfs destroy -r "${POOL}@${snapname}" 2>/dev/null || zfs destroy "${ours[$i]}"
+  done
+fi
+
+exit 0

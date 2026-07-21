@@ -1,0 +1,5 @@
+#!/bin/bash
+
+# omarchy:summary=Exit 0 if the root filesystem is btrfs.
+
+[[ $(omarchy-fs-type) == "btrfs" ]]
