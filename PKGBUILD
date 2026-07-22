@@ -14,11 +14,14 @@ depends=(
   'omarchy'
   'zfs-dkms-git'
   'zfs-utils-git'
-  'zfsbootmenu'
   'sanoid'
   'efibootmgr'
 )
 optdepends=(
+  # zfsbootmenu is AUR/manual (no binary repo), and ZBM is frequently installed
+  # from prebuilt EFI images rather than the package -- so it CANNOT be a hard
+  # dep (pacman -S omarchy-zfs would fail to resolve it). Install ZBM yourself.
+  'zfsbootmenu: ZFSBootMenu boot manager (AUR or prebuilt EFI images)'
   'lzop: faster syncoid stream compression'
   'mbuffer: syncoid network buffering'
   'pv: syncoid transfer progress'

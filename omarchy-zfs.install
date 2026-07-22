@@ -36,6 +36,26 @@ _ensure_hostid() {
   fi
 }
 
+_cleanup_legacy_unowned() {
+  # Pre-package ("git checkout") era files that SHADOW this package's own
+  # hooks/tools: /etc/pacman.d/hooks overrides /usr/share/libalpm/hooks (same
+  # basename), and /usr/local/bin precedes /usr/bin on PATH. The kernel-guard
+  # symlink also dangles after the Quattro migration moves the checkout, which
+  # can abort future kernel upgrades. Remove them -- but ONLY if unowned by any
+  # package, so we never delete something a package legitimately ships.
+  local f
+  for f in /etc/pacman.d/hooks/00-zfs-autosnap.hook \
+           /etc/pacman.d/hooks/90-omarchy-zfs-kernel-guard.hook \
+           /usr/local/bin/zfs-autosnap \
+           /usr/local/bin/omarchy-zfs-kernel-compat-check \
+           /usr/local/bin/omarchy-zfs-scrub; do
+    if { [[ -e "$f" ]] || [[ -L "$f" ]]; } && ! pacman -Qo "$f" &>/dev/null; then
+      echo ":: omarchy-zfs: removing legacy unowned $f (shadowed package version)"
+      rm -f "$f"
+    fi
+  done
+}
+
 _mask_limine_snapper() {
   # Our omarchy dep drags in limine-snapper-sync; on ZFS it's inert. Mask it
   # so it doesn't error on a system with no snapper config.
@@ -65,6 +85,7 @@ _common() {
     echo ":: omarchy-zfs: root is not ZFS -- ZFS tooling installed but inactive."
     return 0
   fi
+  _cleanup_legacy_unowned
   _configure_archzfs
   _ensure_hostid
   _mask_limine_snapper
@@ -88,8 +109,9 @@ omarchy-zfs installed.
   * ZBM config reference:    /etc/zfsbootmenu/config.yaml.example
   * Hibernation (ZFS zvol):  omarchy-zfs-hibernation-{setup,remove,available}
 
-Verify before your next reboot:
-  lsinitcpio /boot/initramfs-linux.img | grep -q zfs   && echo "zfs hook present"
+Verify before your next reboot (grep for the MODULE, not a bare 'zfs' -- a
+clobbered initramfs still contains incidental files like fsck.zfs/libzfs):
+  lsinitcpio /boot/initramfs-linux.img | grep -q 'zfs\.ko' && echo "zfs module present (bootable)"
 EOF
 }
 

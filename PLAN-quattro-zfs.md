@@ -132,17 +132,41 @@ Runs `OMARCHY_ALLOW_DIRECT_PACMAN`-safe (no pacman calls inside).
 
 1. **Snapshot everything.** `omarchy-zfs-snapshot create` (or `zfs snapshot -r rpool@pre-quattro`);
    confirm ZBM can see it. Confirm both ESP ZBM images boot.
-2. **Stage the mkinitcpio guard first.** Pre-place `zz-omarchy-zfs.conf` (with `zfs`) so that even if
-   the migration regenerates initramfs before `omarchy-zfs` is installed, `zfs` is present.
-3. **Run the stock migration**, but expect and accept that it clobbers `omarchy_hooks.conf`:
-   `omarchy-upgrade-to-quattro --dev` (edge). Do **not** reboot yet.
+2. **Remove legacy UNOWNED ZFS files BEFORE migrating** (validated necessary — nspawn dry-run 2026-07-21).
+   These shadow the package hooks and, worse, the AbortOnFail kernel-guard hook execs a `/usr/local/bin`
+   symlink that dangles once the migration moves the checkout → aborts kernel-touching transactions:
+   ```
+   sudo rm -f /etc/pacman.d/hooks/00-zfs-autosnap.hook \
+              /etc/pacman.d/hooks/90-omarchy-zfs-kernel-guard.hook \
+              /usr/local/bin/zfs-autosnap \
+              /usr/local/bin/omarchy-zfs-kernel-compat-check \
+              /usr/local/bin/omarchy-zfs-scrub
+   ```
+   (The `omarchy-zfs` `.install` also does this idempotently, but the migration runs first, so do it by hand.)
+3. **Run the stock migration with the snapper escape hatch** (validated: stock `configure_snapper_policy`
+   runs `snapper create-config /` which fails on ZFS — "invalid filesystem type" — and ABORTS the migration
+   under `set -e`). Set `OMARCHY_SNAPPER_CONFIGURE_TEST=1` so snapper config is skipped (stays inert on ZFS
+   as intended). Expect and accept that it clobbers `omarchy_hooks.conf`:
+   `sudo OMARCHY_SNAPPER_CONFIGURE_TEST=1 omarchy-upgrade-to-quattro --dev --yes`. Do **not** reboot yet.
 4. **Install `omarchy-zfs`** from our repo (§3): `sudo pacman -S omarchy-zfs`. Its `.install`
-   re-asserts the zfs hook, regenerates initramfs, refreshes ZBM, re-adds `[archzfs]`, enables scrub.
-5. **Verify before reboot** (§5 checklist): `lsinitcpio /boot/initramfs-linux.img | grep zfs`, guard
-   script resolves (`readlink -f $(command -v omarchy-zfs-kernel-compat-check)`), `BootOrder` still
-   ZBM-first, scrub timer enabled, plugins + shell.json intact.
+   re-asserts the zfs hook, regenerates initramfs, refreshes ZBM, re-adds `[archzfs]`, enables scrub,
+   removes any remaining legacy unowned files. NOTE: install `zfsbootmenu` yourself first (AUR/prebuilt EFI —
+   it's an optdepend, pacman can't pull it).
+5. **Verify before reboot** (§5 checklist). Use the PRECISE boot signal
+   `lsinitcpio /boot/initramfs-linux.img | grep -q 'zfs\.ko'` — NOT bare `grep zfs` (a clobbered initramfs
+   still contains incidental fsck.zfs/libzfs/rpool.key; validated false-positive). Also: guard script
+   resolves (`readlink -f $(command -v omarchy-zfs-kernel-compat-check)` → `/usr/bin/…`), `BootOrder`
+   still ZBM-first, scrub timer enabled, plugins + shell.json intact.
 6. **Reboot.** If it fails: ZBM → select `rpool@pre-quattro` → rollback.
 7. Remove the `~/.local/share/omarchy.*.bak` checkout only after a few clean days.
+
+> **Dry-run status (2026-07-21):** the full clobber→self-heal cycle was validated end-to-end in a
+> systemd-nspawn container on a clone of this system. Confirmed: stock omarchy-settings ships a zfs-less
+> `omarchy_hooks.conf` (`…encrypt filesystems fsck btrfs-overlayfs`); the clobber drops `zfs.ko`+`hooks/zfs`
+> from the initramfs; installing `omarchy-zfs` restores them; and the `zz-` PostTransaction hook re-heals
+> automatically on a subsequent `omarchy update`-style `--overwrite` reinstall (fired last, 7/7). The three
+> migration blockers above (legacy files, snapper, and — container-only — resolv.conf/DNS) were the only
+> things needing intervention. NOT yet tested: an actual EFI reboot (deferred to a VM; ESPs are shared).
 
 ---
 
