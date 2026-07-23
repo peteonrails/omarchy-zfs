@@ -1,0 +1,94 @@
+#!/bin/bash
+
+# omarchy:summary=Install & pin the newest kernel the installed ZFS supports (kernel strategy A).
+# omarchy:args=[linux|linux-lts|linux-zen|linux-hardened]
+# omarchy:requires-sudo=true
+#
+# ZFS on rolling Arch lags the kernel: the zfs module only builds up to its
+# Linux-Maximum (from the zfs META). This picks the newest <flavor> kernel whose
+# X.Y version is <= that maximum -- from the repos, the local pacman cache, or
+# the Arch Linux Archive (archive.archlinux.org) when the repos have outrun ZFS
+# -- installs it + headers, pins them via IgnorePkg, and rebuilds the initramfs
+# and ZBM. The 90-omarchy-zfs-kernel-guard hook then blocks any future -Syu that
+# would push the kernel past ZFS support.
+#
+# Idempotent-ish: safe to re-run; only changes the kernel when needed.
+
+set -euo pipefail
+
+FLAVOR="${1:-linux}"
+case "$FLAVOR" in
+  linux | linux-lts | linux-zen | linux-hardened) ;;
+  *) echo "usage: omarchy-zfs-kernel-install [linux|linux-lts|linux-zen|linux-hardened]" >&2; exit 2 ;;
+esac
+FL1="${FLAVOR:0:1}"   # ALA shards packages by first letter
+
+# --- ZFS Linux-Maximum (the ceiling) --------------------------------------------
+MAX="$(grep -hE '^Linux-Maximum:' /usr/src/zfs-*/META 2>/dev/null | awk '{print $2}' | sort -V | tail -1)"
+[[ -n $MAX ]] || { echo "Cannot read ZFS Linux-Maximum (is a zfs-dkms package installed?)" >&2; exit 1; }
+echo ":: ZFS supports kernels up to ${MAX}.x"
+
+# X.Y of a package version, e.g. 7.0.9.arch2-1 -> 7.0
+kxy() { local v="${1%%.arch*}"; v="${v%-*}"; echo "${v%.*}"; }
+# true if kxy(version) <= MAX
+within() { [[ "$(printf '%s\n%s\n' "$(kxy "$1")" "$MAX" | sort -V | tail -1)" == "$MAX" ]]; }
+
+pin_and_build() {
+  echo ":: pinning $FLAVOR + $FLAVOR-headers in /etc/pacman.conf (IgnorePkg)"
+  if grep -qE '^\s*IgnorePkg' /etc/pacman.conf; then
+    grep -qE "^\s*IgnorePkg.*\b$FLAVOR\b" /etc/pacman.conf ||
+      sed -i -E "s/^(\s*IgnorePkg\s*=.*)/\1 $FLAVOR $FLAVOR-headers/" /etc/pacman.conf
+  else
+    sed -i -E "s/^#\s*IgnorePkg\s*=.*/IgnorePkg = $FLAVOR $FLAVOR-headers/" /etc/pacman.conf
+    grep -qE '^\s*IgnorePkg' /etc/pacman.conf ||
+      printf '\n[options]\nIgnorePkg = %s %s-headers\n' "$FLAVOR" "$FLAVOR" >>/etc/pacman.conf
+  fi
+  echo ":: rebuilding initramfs + ZBM"
+  if command -v omarchy-refresh-zbm &>/dev/null; then omarchy-refresh-zbm; else mkinitcpio -P; fi
+}
+
+# --- 1. repo candidate ----------------------------------------------------------
+REPO_VER="$(pacman -Si "$FLAVOR" 2>/dev/null | awk '/^Version/{print $3; exit}')"
+if [[ -n $REPO_VER ]] && within "$REPO_VER"; then
+  echo ":: repo $FLAVOR $REPO_VER is within the ceiling -- installing from repo"
+  pacman -S --needed --noconfirm "$FLAVOR" "$FLAVOR-headers"
+  pin_and_build; echo ":: done"; exit 0
+fi
+[[ -n $REPO_VER ]] && echo ":: repo $FLAVOR $REPO_VER ($(kxy "$REPO_VER")) exceeds ${MAX} -- looking for an older build"
+
+# --- 2. local pacman cache ------------------------------------------------------
+best_pkg="" best_ver=""
+shopt -s nullglob
+for f in /var/cache/pacman/pkg/${FLAVOR}-[0-9]*.pkg.tar.*; do
+  [[ $f == *.sig ]] && continue
+  v="$(pacman -Qip "$f" 2>/dev/null | awk '/^Version/{print $3}')"
+  [[ -n $v ]] && within "$v" || continue
+  if [[ -z $best_ver || "$(printf '%s\n%s\n' "$best_ver" "$v" | sort -V | tail -1)" == "$v" ]]; then
+    best_ver="$v"; best_pkg="$f"
+  fi
+done
+if [[ -n $best_pkg ]]; then
+  hdr="/var/cache/pacman/pkg/${FLAVOR}-headers-${best_ver}-x86_64.pkg.tar.zst"
+  echo ":: installing cached $FLAVOR $best_ver"
+  if [[ -f $hdr ]]; then pacman -U --noconfirm "$best_pkg" "$hdr"; else pacman -U --noconfirm "$best_pkg"; fi
+  pin_and_build; echo ":: done"; exit 0
+fi
+
+# --- 3. Arch Linux Archive ------------------------------------------------------
+echo ":: querying the Arch Linux Archive for the newest $FLAVOR <= ${MAX} ..."
+base="https://archive.archlinux.org/packages/${FL1}/${FLAVOR}"
+ver="$(curl -fsSL "$base/" 2>/dev/null \
+  | grep -oE "${FLAVOR}-[0-9][A-Za-z0-9._-]*-x86_64\.pkg\.tar\.(zst|xz)" \
+  | grep -vE '\.sig' | sed -E "s/^${FLAVOR}-(.*)-x86_64.*/\1/" | sort -u \
+  | while read -r v; do within "$v" && echo "$v"; done | sort -V | tail -1)"
+[[ -n $ver ]] || { echo "No $FLAVOR <= ${MAX} found in the Archive." >&2; exit 1; }
+echo ":: Archive has $FLAVOR $ver"
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+for p in "$FLAVOR" "$FLAVOR-headers"; do
+  fl1="${p:0:1}"
+  url="https://archive.archlinux.org/packages/${fl1}/${p}/${p}-${ver}-x86_64.pkg.tar.zst"
+  echo ":: fetching $url"; curl -fsSL "$url" -o "$tmp/$(basename "$url")"
+done
+pacman -U --noconfirm "$tmp"/*.pkg.tar.zst
+pin_and_build
+echo ":: done -- $FLAVOR pinned at $ver (<= ZFS max ${MAX})"

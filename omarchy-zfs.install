@@ -28,11 +28,22 @@ EOF
 }
 
 _ensure_hostid() {
-  # zfs's mkinitcpio install hook only embeds /etc/hostid `if [[ -f ... ]]`.
-  # Without it, pool import can misbehave. Generate one if missing.
-  if [[ ! -f /etc/hostid ]] && command -v zgenhostid &>/dev/null; then
-    echo ":: omarchy-zfs: generating /etc/hostid (hardens pool import)"
-    zgenhostid || true
+  # /etc/hostid gets embedded in the initramfs by zfs's mkinitcpio install hook.
+  # It MUST match the ROOT POOL's hostid, or the pool refuses to import on boot
+  # (or needs -f). A bare `zgenhostid` writes the GLIBC hostid, which on systems
+  # that import via `spl.spl_hostid=` on the cmdline does NOT match the pool ->
+  # boot-critical mismatch. So derive the hostid from the pool (authoritative).
+  command -v zdb &>/dev/null && command -v zgenhostid &>/dev/null || return 0
+  local pool poolid hex cur
+  pool="$(zfs list -H -o name / 2>/dev/null | cut -d/ -f1)"
+  [[ -n "$pool" ]] || return 0                    # no ZFS root imported (e.g. chroot) -> leave it
+  poolid="$(zdb -C "$pool" 2>/dev/null | awk '/hostid:/{print $2; exit}')"
+  [[ "$poolid" =~ ^[0-9]+$ ]] || return 0
+  hex="$(printf '%08x' "$poolid" 2>/dev/null)" || return 0
+  cur="$([[ -f /etc/hostid ]] && hexdump -e '1/4 "%08x"' /etc/hostid 2>/dev/null)"
+  if [[ "$cur" != "$hex" ]]; then
+    echo ":: omarchy-zfs: setting /etc/hostid to match pool '$pool' (0x$hex)"
+    zgenhostid -f "0x$hex" || true
   fi
 }
 

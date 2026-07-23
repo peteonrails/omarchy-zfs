@@ -10,10 +10,18 @@ license=('MIT')
 # stack plus the ZFS layer. omarchy-dev provides/conflicts omarchy, so this is
 # satisfied on any channel. Inert limine/snapper pulled in transitively are
 # masked/ignored by the .install.
+#
+# ZFS deps use the VIRTUAL provides (`zfs`, `zfs-utils`) rather than a concrete
+# package, so any provider satisfies them: zfs-dkms / zfs-dkms-git (DKMS,
+# kernel-strategy A) OR the prebuilt zfs-linux / zfs-linux-lts. This avoids
+# breaking existing installs and lets the kernel strategy be chosen at install
+# time (see omarchy-zfs-kernel-install + the kernel guard).
 depends=(
   'omarchy'
-  'zfs-dkms-git'
-  'zfs-utils-git'
+  'zfs'          # kernel module — any provider (zfs-dkms, zfs-dkms-git, zfs-linux, zfs-linux-lts)
+  'zfs-utils'    # userspace + the /usr/lib/initcpio zfs hook — any provider
+  'libunwind'    # zfs-utils(-git) links libunwind.so.8 but doesn't declare it;
+                 # without it mkinitcpio silently omits zpool/mount.zfs -> unbootable initramfs
   'sanoid'
   'efibootmgr'
 )
@@ -40,7 +48,7 @@ package() {
     omarchy-fs-type omarchy-fs-zfs omarchy-fs-btrfs
     omarchy-cmdline-add omarchy-refresh-zbm
     omarchy-zfs-snapshot omarchy-zfs-scrub omarchy-zfs-kernel-compat-check
-    omarchy-zfs-autosnap omarchy-zfs-ensure-mkinitcpio
+    omarchy-zfs-autosnap omarchy-zfs-ensure-mkinitcpio omarchy-zfs-kernel-install
     omarchy-zfs-hibernation-setup omarchy-zfs-hibernation-remove omarchy-zfs-hibernation-available
     omarchy-bootstrap-zfs
   )
