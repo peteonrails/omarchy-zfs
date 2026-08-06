@@ -67,12 +67,17 @@ _cleanup_legacy_unowned() {
   done
 }
 
-_mask_limine_snapper() {
-  # Our omarchy dep drags in limine-snapper-sync; on ZFS it's inert. Mask it
-  # so it doesn't error on a system with no snapper config.
-  if systemctl list-unit-files limine-snapper-sync.service &>/dev/null; then
-    systemctl mask limine-snapper-sync.service &>/dev/null || true
-  fi
+_mask_snapper_units() {
+  # Our omarchy dep drags in snapper + limine-snapper-sync; on ZFS they're
+  # inert. Mask them so they don't error on a system with no snapper config.
+  # Masking also survives omarchy's snapper.sh trying to re-enable them --
+  # `systemctl enable` on a masked unit fails, and snapper.sh swallows it.
+  local unit
+  for unit in limine-snapper-sync.service snapper-cleanup.timer snapper-timeline.timer; do
+    if systemctl list-unit-files "$unit" &>/dev/null; then
+      systemctl mask "$unit" &>/dev/null || true
+    fi
+  done
 }
 
 _warn_bootorder() {
@@ -99,7 +104,13 @@ _common() {
   _cleanup_legacy_unowned
   _configure_archzfs
   _ensure_hostid
-  _mask_limine_snapper
+  _mask_snapper_units
+  # Drop the stale btrfs snapper config omarchy's installer leaves behind --
+  # without this, `omarchy update`'s first step (omarchy-snapshot create)
+  # fails on ZFS and aborts every update.
+  if command -v omarchy-zfs-snapper-guard &>/dev/null; then
+    omarchy-zfs-snapper-guard || true
+  fi
   # Re-assert the zfs mkinitcpio hook and regenerate initramfs + ZBM.
   if command -v omarchy-zfs-ensure-mkinitcpio &>/dev/null; then
     omarchy-zfs-ensure-mkinitcpio || true
@@ -116,6 +127,7 @@ omarchy-zfs installed.
   * Pre-upgrade snapshots:   00-zfs-autosnap.hook (config: /etc/omarchy-zfs/autosnap.conf)
   * Kernel/zfs-dkms guard:   90-omarchy-zfs-kernel-guard.hook
   * Initramfs self-heal:     zz-omarchy-zfs-ensure-mkinitcpio.hook (runs after every upgrade)
+  * Snapper self-heal:       zz-omarchy-zfs-snapper-guard.hook (keeps `omarchy update` working)
   * Monthly scrub:           omarchy-zfs-scrub.timer (enabled)
   * ZBM config reference:    /etc/zfsbootmenu/config.yaml.example
   * Hibernation (ZFS zvol):  omarchy-zfs-hibernation-{setup,remove,available}
@@ -132,7 +144,10 @@ post_upgrade() {
 
 post_remove() {
   systemctl disable --now omarchy-zfs-scrub.timer &>/dev/null || true
-  systemctl unmask limine-snapper-sync.service &>/dev/null || true
+  local unit
+  for unit in limine-snapper-sync.service snapper-cleanup.timer snapper-timeline.timer; do
+    systemctl unmask "$unit" &>/dev/null || true
+  done
   if [[ "$(findmnt -n -o FSTYPE / 2>/dev/null || true)" == "zfs" ]]; then
     echo ":: omarchy-zfs: NOTE - leaving /etc/mkinitcpio.conf.d/zz-omarchy-zfs.conf in place."
     echo "   Removing it and regenerating the initramfs on a ZFS root would drop the"

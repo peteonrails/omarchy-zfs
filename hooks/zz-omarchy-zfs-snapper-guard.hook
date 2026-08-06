@@ -1,0 +1,25 @@
+# Re-remove stale non-btrfs snapper configs after every transaction.
+#
+# omarchy's installer/migration path (/usr/share/omarchy/install/config/
+# snapper.sh, reached from omarchy-setup-system, install/config/all.sh and
+# migration 1781984677) unconditionally re-installs a snapper `root` config
+# whose template hardcodes FSTYPE="btrfs". On a ZFS root that config makes
+# `omarchy-snapshot create` -- the FIRST step of `omarchy update` -- fail,
+# which aborts the entire update.
+#
+# So a one-shot cleanup in the .install isn't enough: it has to be re-asserted
+# whenever omarchy is upgraded. Triggering on every package (rather than a
+# Path target) is deliberate -- the snapper config is written by omarchy shell
+# scripts, not owned by any package, so pacman never sees it as a file target.
+# omarchy-zfs-snapper-guard is a cheap no-op when nothing is stale.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = *
+
+[Action]
+Description = Removing stale non-btrfs snapper configs (omarchy-zfs)...
+When = PostTransaction
+Exec = /usr/bin/omarchy-zfs-snapper-guard

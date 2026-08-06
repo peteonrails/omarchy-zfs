@@ -1,0 +1,142 @@
+#!/bin/bash
+
+# omarchy:summary=Remove stale non-btrfs snapper configs that break omarchy-update on ZFS.
+# omarchy:requires-sudo=true
+#
+# Why this exists: `omarchy update` starts with
+#   omarchy-snapshot create || (($? == 127))
+# and upstream's omarchy-snapshot only tolerates exit 127 (snapper not
+# installed). Our `omarchy` dep drags snapper in transitively, so the 127
+# escape hatch never fires. omarchy-snapshot then does:
+#   for config in $(snapper list-configs); do snapper -c "$config" create ...
+# On a ZFS root the `root` config left behind by omarchy's installer
+# (/usr/share/omarchy/install/config/snapper.sh, which writes a template with
+# a hardcoded FSTYPE="btrfs" and SUBVOLUME="/") makes that call fail with
+#   IO Error (subvolume is not a btrfs subvolume).
+# -> non-127 exit -> omarchy-update's ERR trap -> "Something went wrong
+# during the update!" and NO packages are updated. This happens on EVERY
+# update, so the system is permanently un-updatable until it's fixed.
+#
+# The fix is to delete snapper configs whose SUBVOLUME is not actually on
+# btrfs. With no configs listed, omarchy-snapshot's loop is empty and it
+# exits 0, so the update proceeds. Nothing is lost: the pre-upgrade snapshot
+# safety net on ZFS is provided by 00-zfs-autosnap.hook (PreTransaction),
+# not by snapper.
+#
+# We deliberately key off the per-config SUBVOLUME rather than blanket-wiping
+# /etc/snapper/configs, so a host with a genuine secondary btrfs filesystem
+# keeps its working snapper configs.
+#
+# NOTE: snapper serves `list-configs` from the snapperd D-Bus daemon, which
+# caches the config list. Deleting the file is not enough on a running
+# system -- snapperd must be restarted or it keeps reporting the dead config.
+#
+# Invoked by:
+#   - zz-omarchy-zfs-snapper-guard.hook (PostTransaction, every transaction)
+#   - omarchy-zfs.install (at package install/upgrade)
+
+set -euo pipefail
+
+# Testability seams:
+#   OMARCHY_ZFS_SNAPPER_DIR    override /etc/snapper/configs
+#   OMARCHY_ZFS_SNAPPER_CONFD  override /etc/conf.d/snapper
+#   OMARCHY_ZFS_DRYRUN=1       report what would change, touch nothing
+CONFIG_DIR="${OMARCHY_ZFS_SNAPPER_DIR:-/etc/snapper/configs}"
+CONFD="${OMARCHY_ZFS_SNAPPER_CONFD:-/etc/conf.d/snapper}"
+DRYRUN="${OMARCHY_ZFS_DRYRUN:-0}"
+
+as_root() {
+  if (( EUID == 0 )); then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+# Inert on non-ZFS roots (skipped under dry-run so this can be exercised
+# anywhere). On btrfs the configs are valid and must be left alone.
+if [[ "$DRYRUN" != "1" ]]; then
+  command -v findmnt &>/dev/null || exit 0
+  [[ "$(findmnt -n -o FSTYPE / 2>/dev/null || true)" == "zfs" ]] || exit 0
+fi
+
+[[ -d "$CONFIG_DIR" ]] || exit 0
+
+# Read a config's SUBVOLUME without sourcing it (these files are attacker-
+# irrelevant but shell-sourcing a config to read one value is needless).
+read_subvolume() {
+  sed -n 's/^[[:space:]]*SUBVOLUME[[:space:]]*=[[:space:]]*"\?\([^"#]*\)"\?[[:space:]]*$/\1/p' "$1" |
+    tail -1 | sed 's/[[:space:]]*$//'
+}
+
+removed=()
+
+for cfg in "$CONFIG_DIR"/*; do
+  [[ -f "$cfg" ]] || continue
+  name="$(basename "$cfg")"
+
+  sub="$(read_subvolume "$cfg" || true)"
+
+  if [[ -z "$sub" ]]; then
+    # No SUBVOLUME we can understand. snapper would choke on it too, but
+    # deleting a file we can't parse is worse than leaving it -- warn only.
+    echo "omarchy-zfs-snapper-guard: $name has no readable SUBVOLUME, leaving it alone" >&2
+    continue
+  fi
+
+  # A config pointing at a path that no longer exists is stale by definition.
+  if [[ ! -e "$sub" ]]; then
+    removed+=("$name")
+    echo "omarchy-zfs-snapper-guard: $name -> $sub (missing) is stale"
+    continue
+  fi
+
+  subfs="$(findmnt -n -o FSTYPE --target "$sub" 2>/dev/null || true)"
+  if [[ "$subfs" == "btrfs" ]]; then
+    continue  # genuine, working snapper config -- keep
+  fi
+
+  removed+=("$name")
+  echo "omarchy-zfs-snapper-guard: $name -> $sub is ${subfs:-unknown}, not btrfs (breaks omarchy-snapshot)"
+done
+
+if (( ${#removed[@]} == 0 )); then
+  exit 0  # cheap no-op: the common case on every PostTransaction run
+fi
+
+if [[ "$DRYRUN" == "1" ]]; then
+  echo "omarchy-zfs-snapper-guard: DRYRUN set, would remove: ${removed[*]}"
+  exit 0
+fi
+
+for name in "${removed[@]}"; do
+  as_root rm -f "$CONFIG_DIR/$name"
+done
+echo "omarchy-zfs-snapper-guard: removed stale snapper config(s): ${removed[*]}"
+
+# Drop the removed names from SNAPPER_CONFIGS so snapper-cleanup.timer and
+# friends don't fail on a config that no longer exists.
+if [[ -f "$CONFD" ]]; then
+  current="$(sed -n 's/^[[:space:]]*SNAPPER_CONFIGS[[:space:]]*=[[:space:]]*"\?\([^"]*\)"\?[[:space:]]*$/\1/p' "$CONFD" | tail -1 || true)"
+  if [[ -n "$current" ]]; then
+    kept=()
+    for name in $current; do
+      skip=0
+      for gone in "${removed[@]}"; do
+        [[ "$name" == "$gone" ]] && { skip=1; break; }
+      done
+      (( skip )) || kept+=("$name")
+    done
+    printf 'SNAPPER_CONFIGS="%s"\n' "${kept[*]-}" | as_root tee "$CONFD" >/dev/null
+    echo "omarchy-zfs-snapper-guard: SNAPPER_CONFIGS=\"${kept[*]-}\" in $CONFD"
+  fi
+fi
+
+# snapperd caches the config list and will keep serving the deleted config
+# (so `snapper list-configs` -- and therefore omarchy-snapshot -- would still
+# fail) until it is restarted. Only bother if it's actually running.
+if command -v systemctl &>/dev/null; then
+  if systemctl is-active --quiet snapperd 2>/dev/null; then
+    as_root systemctl restart snapperd &>/dev/null || true
+  fi
+fi

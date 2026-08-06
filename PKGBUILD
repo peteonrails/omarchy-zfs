@@ -1,7 +1,7 @@
 # Maintainer: Pete Jackson <pete@tern.travel>
 pkgname=omarchy-zfs
 pkgver=1.0.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Root-on-ZFS + ZFSBootMenu support layer for Omarchy (Quattro)"
 arch=('any')
 url="https://github.com/peteonrails/omarchy-zfs"
@@ -49,6 +49,7 @@ package() {
     omarchy-cmdline-add omarchy-refresh-zbm
     omarchy-zfs-snapshot omarchy-zfs-scrub omarchy-zfs-kernel-compat-check
     omarchy-zfs-autosnap omarchy-zfs-ensure-mkinitcpio omarchy-zfs-kernel-install
+    omarchy-zfs-snapper-guard
     omarchy-zfs-hibernation-setup omarchy-zfs-hibernation-remove omarchy-zfs-hibernation-available
     omarchy-bootstrap-zfs
   )
@@ -62,6 +63,7 @@ package() {
     00-zfs-autosnap.hook
     90-omarchy-zfs-kernel-guard.hook
     zz-omarchy-zfs-ensure-mkinitcpio.hook
+    zz-omarchy-zfs-snapper-guard.hook
   )
   local h
   for h in "${hooks[@]}"; do
