@@ -80,19 +80,13 @@ _mask_snapper_units() {
   done
 }
 
-_warn_bootorder() {
-  # Do NOT auto-reorder (decision 7.5: mask-and-ignore, revisit after testing).
-  # Just warn if ZFSBootMenu isn't the first boot entry, so the admin notices
-  # if installing limine stole the top NVRAM slot.
-  command -v efibootmgr &>/dev/null || return 0
-  local order first firstlabel
-  order="$(efibootmgr 2>/dev/null | sed -n 's/^BootOrder: //p' | cut -d, -f1)"
-  [[ -n "$order" ]] || return 0
-  firstlabel="$(efibootmgr 2>/dev/null | grep -i "^Boot${order}" || true)"
-  if [[ -n "$firstlabel" && "$firstlabel" != *[Zz][Bb][Mm]* && "$firstlabel" != *ZFSBootMenu* ]]; then
-    echo ":: omarchy-zfs: WARNING - first EFI boot entry is not ZFSBootMenu:"
-    echo "     $firstlabel"
-    echo "     If the system won't boot into ZBM, re-assert BootOrder with efibootmgr."
+_guard_bootorder() {
+  # Supersedes the old warn-only check (decision 7.5 said "mask and ignore,
+  # revisit after testing" -- testing found limine-install actively front-loads
+  # its own NVRAM entry during `omarchy update`, and a Limine boot on ZFS is a
+  # dead boot, so a passive warning at install time was never going to help).
+  if command -v omarchy-zfs-bootorder-guard &>/dev/null; then
+    omarchy-zfs-bootorder-guard || true
   fi
 }
 
@@ -116,7 +110,7 @@ _common() {
     omarchy-zfs-ensure-mkinitcpio || true
   fi
   systemctl enable --now omarchy-zfs-scrub.timer &>/dev/null || true
-  _warn_bootorder
+  _guard_bootorder
 }
 
 post_install() {
@@ -128,6 +122,7 @@ omarchy-zfs installed.
   * Kernel/zfs-dkms guard:   90-omarchy-zfs-kernel-guard.hook
   * Initramfs self-heal:     zz-omarchy-zfs-ensure-mkinitcpio.hook (runs after every upgrade)
   * Snapper self-heal:       zz-omarchy-zfs-snapper-guard.hook (keeps `omarchy update` working)
+  * BootOrder self-heal:     zz-omarchy-zfs-bootorder-guard.hook (keeps ZBM first in NVRAM)
   * Monthly scrub:           omarchy-zfs-scrub.timer (enabled)
   * ZBM config reference:    /etc/zfsbootmenu/config.yaml.example
   * Hibernation (ZFS zvol):  omarchy-zfs-hibernation-{setup,remove,available}

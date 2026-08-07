@@ -1,0 +1,114 @@
+#!/bin/bash
+
+# omarchy:summary=Keep ZFSBootMenu first in the EFI BootOrder.
+# omarchy:requires-sudo=true
+#
+# Why this exists: `limine` is a hard dependency of omarchy, and
+# /usr/bin/limine-install calls efibootmgr to register (and front-load) its
+# own NVRAM entry. On a root-on-ZFS box that entry is actively harmful --
+# limine-entry-tool generates a UKI entry with no `root=` and no
+# `spl.spl_hostid=`, so booting it lands in an emergency shell instead of
+# the system. Every `omarchy update` that touches limine can silently move
+# Limine above ZFSBootMenu in BootOrder, and you only find out on reboot.
+#
+# So: after every transaction, if the first entry in BootOrder is not a
+# ZFSBootMenu entry, move the ZBM entries back to the front. We only REORDER
+# -- never delete another bootloader's entry, since that's the admin's call
+# (and a package silently deleting NVRAM entries is hostile).
+#
+# Disable with OMARCHY_ZFS_BOOTORDER_GUARD=0 in /etc/omarchy-zfs/bootorder.conf.
+#
+# Invoked by:
+#   - zz-omarchy-zfs-bootorder-guard.hook (PostTransaction, every transaction)
+#   - omarchy-zfs.install (at package install/upgrade)
+
+set -euo pipefail
+
+# Testability seams:
+#   OMARCHY_ZFS_EFIBOOTMGR_OUT  read entries from a file instead of efibootmgr
+#   OMARCHY_ZFS_DRYRUN=1        report the reorder but don't touch NVRAM
+CONF="${OMARCHY_ZFS_BOOTORDER_CONF:-/etc/omarchy-zfs/bootorder.conf}"
+DRYRUN="${OMARCHY_ZFS_DRYRUN:-0}"
+FIXTURE="${OMARCHY_ZFS_EFIBOOTMGR_OUT:-}"
+
+OMARCHY_ZFS_BOOTORDER_GUARD=1
+# shellcheck source=/dev/null
+[[ -r "$CONF" ]] && source "$CONF"
+[[ "$OMARCHY_ZFS_BOOTORDER_GUARD" == "0" ]] && exit 0
+
+as_root() {
+  if (( EUID == 0 )); then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+if [[ -z "$FIXTURE" ]]; then
+  # Inert on non-ZFS roots -- on btrfs, Limine is the correct bootloader.
+  command -v findmnt &>/dev/null || exit 0
+  [[ "$(findmnt -n -o FSTYPE / 2>/dev/null || true)" == "zfs" ]] || exit 0
+
+  command -v efibootmgr &>/dev/null || exit 0
+  [[ -d /sys/firmware/efi ]] || exit 0   # BIOS boot: nothing to guard
+fi
+
+read_efi() {
+  if [[ -n "$FIXTURE" ]]; then
+    cat "$FIXTURE"
+  else
+    as_root efibootmgr 2>/dev/null || true
+  fi
+}
+
+efi_out="$(read_efi)"
+[[ -n "$efi_out" ]] || exit 0
+
+order="$(printf '%s\n' "$efi_out" | sed -n 's/^BootOrder:[[:space:]]*//p' | tr -d '[:space:]')"
+[[ -n "$order" ]] || exit 0
+
+# Collect the boot numbers whose entry looks like ZFSBootMenu. Match the
+# label OR the loader path (\EFI\ZBM\...), so a renamed entry still counts.
+# Only ACTIVE entries (Boot0006*) can boot, so inactive ones don't qualify.
+is_zbm_num() {
+  printf '%s\n' "$efi_out" | grep -qiE "^Boot$1\*.*(zfsbootmenu|\\\\EFI\\\\ZBM\\\\|[^a-z]zbm[^a-z])"
+}
+
+IFS=',' read -r -a order_arr <<< "$order"
+(( ${#order_arr[@]} )) || exit 0
+
+# Already correct? Cheap no-op on the overwhelmingly common case.
+if is_zbm_num "${order_arr[0]}"; then
+  exit 0
+fi
+
+zbm=()
+rest=()
+for num in "${order_arr[@]}"; do
+  if is_zbm_num "$num"; then
+    zbm+=("$num")
+  else
+    rest+=("$num")
+  fi
+done
+
+if (( ${#zbm[@]} == 0 )); then
+  echo "omarchy-zfs-bootorder-guard: WARNING - no active ZFSBootMenu entry in BootOrder ($order)." >&2
+  echo "  This system boots from ZFS; re-create the ZBM entry with efibootmgr before rebooting." >&2
+  exit 0
+fi
+
+new_order="$(IFS=','; echo "${zbm[*]},${rest[*]}")"
+
+first_label="$(printf '%s\n' "$efi_out" | sed -n "s/^Boot${order_arr[0]}\*\?[[:space:]]*//p" | head -1 | cut -f1)"
+echo "omarchy-zfs-bootorder-guard: '${first_label:-Boot${order_arr[0]}}' displaced ZFSBootMenu at the top of BootOrder"
+echo "  was: $order"
+echo "  now: $new_order"
+
+if [[ "$DRYRUN" == "1" ]]; then
+  echo "omarchy-zfs-bootorder-guard: DRYRUN set, NVRAM not modified"
+  exit 0
+fi
+
+as_root efibootmgr -o "$new_order" >/dev/null
+echo "omarchy-zfs-bootorder-guard: BootOrder restored (ZFSBootMenu first)"

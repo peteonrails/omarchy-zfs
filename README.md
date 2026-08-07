@@ -21,15 +21,18 @@ can never silently strip the ZFS layer.
 | `/usr/bin/omarchy-zfs-kernel-compat-check` | block kernel upgrades zfs-dkms can't build |
 | `/usr/bin/omarchy-zfs-ensure-mkinitcpio` | **self-heal**: re-assert the `zfs` mkinitcpio hook |
 | `/usr/bin/omarchy-zfs-snapper-guard` | **self-heal**: drop stale non-btrfs snapper configs |
+| `/usr/bin/omarchy-zfs-bootorder-guard` | **self-heal**: keep ZFSBootMenu first in the EFI BootOrder |
 | `/usr/bin/omarchy-zfs-hibernation-{setup,remove,available}` | ZFS zvol swap hibernation |
 | `/usr/bin/omarchy-bootstrap-zfs` | pool/dataset/ZBM bootstrap (installer/DR) |
 | `/usr/share/libalpm/hooks/00-zfs-autosnap.hook` | PreTransaction snapshot |
 | `/usr/share/libalpm/hooks/90-omarchy-zfs-kernel-guard.hook` | PreTransaction kernel guard |
 | `/usr/share/libalpm/hooks/zz-omarchy-zfs-ensure-mkinitcpio.hook` | PostTransaction self-heal |
 | `/usr/share/libalpm/hooks/zz-omarchy-zfs-snapper-guard.hook` | PostTransaction snapper self-heal |
+| `/usr/share/libalpm/hooks/zz-omarchy-zfs-bootorder-guard.hook` | PostTransaction BootOrder self-heal |
 | `/usr/lib/systemd/system/omarchy-zfs-scrub.{service,timer}` | monthly scrub |
 | `/etc/zfsbootmenu/config.yaml.example`, `hooks/**` | ZBM reference config + branded unlock/theme |
 | `/etc/omarchy-zfs/autosnap.conf` | autosnap tunables |
+| `/etc/omarchy-zfs/bootorder.conf` | boot-order guard opt-out |
 
 ## The boot-safety guarantee
 
@@ -89,6 +92,38 @@ Two details matter:
 `limine-snapper-sync.service`, `snapper-cleanup.timer` and
 `snapper-timeline.timer` are masked — inert on ZFS, and masking survives
 `snapper.sh` trying to re-enable them.
+
+## The boot-order guarantee
+
+`limine` is a hard dependency of `omarchy` and cannot be removed.
+`/usr/bin/limine-install` registers its own EFI entry via `efibootmgr` and can
+front-load it, so an ordinary `omarchy update` can silently move Limine above
+ZFSBootMenu in `BootOrder`. Observed in the wild:
+
+```
+BootOrder: 0000,0006,0005,...
+Boot0000* Limine        ← next boot
+Boot0006* ZFSBootMenu
+```
+
+On root-on-ZFS that is a **dead boot**, not a cosmetic problem.
+`limine-entry-tool` generates a UKI entry whose cmdline carries no `root=` and
+no `spl.spl_hostid=`, so the `zfs` hook has nothing to import and you land in
+an emergency shell. Nothing warns you at update time — you find out on reboot.
+
+`omarchy-zfs-bootorder-guard` runs PostTransaction on every transaction. If the
+first entry in `BootOrder` isn't an active ZFSBootMenu entry, it moves the ZBM
+entries back to the front (preserving their relative order). It **only ever
+reorders** — it never deletes another bootloader's NVRAM entry, since that's the
+admin's call. ZBM entries are matched by label *or* loader path
+(`\EFI\ZBM\...`), and inactive entries don't count. If no active ZBM entry
+exists at all it warns loudly rather than guessing.
+
+Opt out with `OMARCHY_ZFS_BOOTORDER_GUARD=0` in `/etc/omarchy-zfs/bootorder.conf`.
+
+This replaces the earlier warn-only check in the `.install` scriptlet, which
+only ran at package install time and so never fired during the update that
+actually caused the problem.
 
 ### Known residual risk
 

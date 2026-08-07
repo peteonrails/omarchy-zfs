@@ -1,0 +1,25 @@
+# Re-assert ZFSBootMenu at the top of the EFI BootOrder after every
+# transaction.
+#
+# `limine` is a hard dependency of omarchy and cannot be removed. Its
+# /usr/bin/limine-install registers a Limine NVRAM entry and can front-load it,
+# which on root-on-ZFS is a silent boot failure: limine-entry-tool's generated
+# UKI entry carries no `root=` and no `spl.spl_hostid=`, so it drops to an
+# emergency shell instead of importing the pool.
+#
+# Nothing warns about this at update time -- you find out on the next reboot.
+# Triggering on every package (rather than a Path target) is deliberate: NVRAM
+# is not a file pacman can watch. omarchy-zfs-bootorder-guard is a cheap no-op
+# when ZBM is already first, and only ever REORDERS -- it never deletes another
+# bootloader's entry.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = *
+
+[Action]
+Description = Ensuring ZFSBootMenu is first in EFI BootOrder (omarchy-zfs)...
+When = PostTransaction
+Exec = /usr/bin/omarchy-zfs-bootorder-guard
