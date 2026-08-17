@@ -77,13 +77,17 @@ done
 cp "$build_work"/*.pkg.tar.* "$zfs_repo_dir/"
 
 echo ">>> [zfs] downloading target-side ZFS stack into the zfs mirror"
-# linux-lts + zfs-linux-lts: the kernel strategy the bootstrap installs —
-# atomically version-paired by archzfs, no DKMS lottery on the target.
+# zfs-dkms, NOT zfs-linux-lts: archzfs's prebuilt kernel modules hard-pin an
+# exact linux-lts version that Arch's repos rotate out within weeks, which
+# makes the download unresolvable (observed: zfs-linux-lts wanting
+# linux-lts=6.12.29-1). DKMS floats: the mirror's linux + linux-headers and
+# archzfs's zfs-dkms are mutually consistent at build time, and on the
+# installed system omarchy-zfs's kernel guard prevents future skew.
 # The rest are omarchy-zfs/sanoid runtime deps not guaranteed to be in the
 # stock offline mirror's closure.
 zfs_target_packages=(
-  linux-lts linux-lts-headers
-  zfs-linux-lts zfs-utils
+  linux linux-headers
+  zfs-dkms zfs-utils
   perl-capture-tiny perl-list-moreutils perl-io-stringy libunwind
   efibootmgr dosfstools iwd
 )

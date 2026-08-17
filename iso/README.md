@@ -22,7 +22,7 @@ Host needs docker, git, and ~15GB free. Extra args pass through to upstream's
 |---|---|
 | ZFS in the live environment | `zfs-dkms` + `linux-t2-headers` added to `packages.x86_64`; the module builds against the live kernel during the ISO build (a build-time failure, never a boot-time one) |
 | ZFS install path | boot prompt (15s timeout, defaults to stock) → `omarchy-zfs-install` → `omarchy-bootstrap-zfs` in offline mode: pool/datasets/encryption wizard, pacstrap of full Omarchy + omarchy-zfs, ZBM install, finalizers |
-| `[zfs-offline]` mirror on the ISO | `linux-lts` + `zfs-linux-lts` (atomically paired, no target-side DKMS), `omarchy-zfs` built from this working tree, `sanoid` + `perl-config-inifiles` built from the AUR, plus deps the stock mirror lacks |
+| `[zfs-offline]` mirror on the ISO | `zfs-dkms` + `linux-headers` for the target (archzfs's prebuilt `zfs-linux-lts` pins a kernel Arch rotates out too fast to bake into an ISO; DKMS floats and the kernel guard prevents future skew), `omarchy-zfs` built from this working tree, `sanoid` + `perl-config-inifiles` built from the AUR, plus deps the stock mirror lacks |
 | ZFSBootMenu | prebuilt release EFI baked at `/usr/share/omarchy-zfs/zbm/vmlinuz.EFI`, so installs are fully offline |
 | Stock installs | untouched — same configurator, orchestrator, cidata autoinstall |
 
