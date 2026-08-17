@@ -496,7 +496,6 @@ stage_pacstrap() {
     linux-firmware
     sudo git iwd
     efibootmgr dosfstools
-    zfs-utils
   )
   if (( OFFLINE )); then
     # Quattro way: Omarchy and the ZFS layer are packages. Installing them in
@@ -504,15 +503,17 @@ stage_pacstrap() {
     # (ensure-mkinitcpio, snapper guard) fire inside the target immediately,
     # so the very first initramfs already carries the zfs hook.
     #
-    # Kernel: stock `linux` + zfs-dkms, matching Omarchy proper. archzfs's
-    # prebuilt zfs-linux-lts pins an exact kernel Arch rotates out too fast to
-    # bake into an ISO; DKMS floats, and the omarchy-zfs kernel guard prevents
-    # future skew.
-    pkgs+=(linux linux-headers zfs-dkms omarchy omarchy-zfs)
+    # Kernel: stock `linux` + zfs-dkms-git, matching Omarchy proper and the
+    # ISO's own live env. archzfs's prebuilt zfs-linux-lts pins an exact
+    # kernel Arch rotates out too fast to bake into an ISO, and even its
+    # zfs-dkms release lags current kernels; the git snapshot (built into the
+    # ISO's [zfs-offline] mirror) tracks them. The omarchy-zfs kernel guard
+    # prevents future skew.
+    pkgs+=(linux linux-headers zfs-dkms-git zfs-utils-git omarchy omarchy-zfs)
     say "pacstrap full Omarchy + ZFS layer from the ISO's offline mirrors (zfs-dkms builds once, in-chroot)"
   else
     # archzfs LTS live ISO: prebuilt modules, atomically paired by archzfs.
-    pkgs+=(linux-lts linux-lts-headers zfs-linux-lts)
+    pkgs+=(linux-lts linux-lts-headers zfs-linux-lts zfs-utils)
     say "pacstrap (≈3 min — prebuilt packages, no DKMS build)"
   fi
 

@@ -20,22 +20,15 @@ zfs_repo_dir="$build_cache_dir/airootfs/var/cache/omarchy/mirror/zfs"
 offline_mirror_dir="$build_cache_dir/airootfs/var/cache/omarchy/mirror/offline"
 mkdir -p "$zfs_repo_dir"
 
-echo ">>> [zfs] configuring archzfs repo"
-archzfs_block='
-[archzfs]
-SigLevel = Never
-Server = https://archzfs.com/$repo/$arch
-Server = https://zxcvfdsa.com/archzfs/$repo/$arch
-'
-for conf in /etc/pacman.conf "$build_cache_dir/pacman.conf"; do
-  [[ -f $conf ]] || continue
-  grep -q '^\[archzfs\]' "$conf" || echo "$archzfs_block" >> "$conf"
-done
-
 echo ">>> [zfs] adding ZFS to the live environment package list"
-# zfs-dkms builds against linux-t2 (the kernel the live ISO boots) during
-# mkarchiso's airootfs install; headers must be present for the dkms hook.
-for pkg in zfs-dkms zfs-utils linux-t2-headers; do
+# zfs-dkms-git, NOT archzfs's zfs-dkms: the live ISO boots linux-t2 tracking
+# current Arch kernels (7.x), and archzfs's zfs release lags them — observed:
+# dkms install zfs/2.3.3 -k 7.1.8-...-t2 exited 1, a WARNING pacman ignores,
+# shipping a live env with no zfs module. AUR git HEAD tracks new kernels
+# (same reason the workstation runs zfs-dkms-git). The module builds during
+# mkarchiso's airootfs install; headers must be present for the dkms hook,
+# and build.sh hard-verifies zfs.ko afterwards.
+for pkg in zfs-dkms-git zfs-utils-git linux-t2-headers; do
   grep -qxF "$pkg" "$build_cache_dir/packages.x86_64" ||
     echo "$pkg" >> "$build_cache_dir/packages.x86_64"
 done
@@ -63,13 +56,15 @@ build_one() {
 }
 
 # perl-module-build: perl-config-inifiles' makedepends (Build.PL needs it).
-pacman --noconfirm -Sy --needed git base-devel perl-module-build >/dev/null
+# python trio: zfs-utils-git's makedepends.
+pacman --noconfirm -Sy --needed git base-devel perl-module-build \
+  python python-cffi python-setuptools >/dev/null
 
 # omarchy-zfs comes from the local checkout baked in by iso/build.sh — the ISO
 # always carries the exact working-tree version, not whatever the AUR has.
 build_one omarchy-zfs /builder/omarchy-zfs-src
 
-for aur_pkg in perl-config-inifiles sanoid; do
+for aur_pkg in perl-config-inifiles sanoid zfs-utils-git zfs-dkms-git; do
   su builder -c "git clone --depth=1 'https://aur.archlinux.org/$aur_pkg.git' '$build_work/$aur_pkg-aur'"
   build_one "$aur_pkg" "$build_work/$aur_pkg-aur"
 done
@@ -77,17 +72,13 @@ done
 cp "$build_work"/*.pkg.tar.* "$zfs_repo_dir/"
 
 echo ">>> [zfs] downloading target-side ZFS stack into the zfs mirror"
-# zfs-dkms, NOT zfs-linux-lts: archzfs's prebuilt kernel modules hard-pin an
-# exact linux-lts version that Arch's repos rotate out within weeks, which
-# makes the download unresolvable (observed: zfs-linux-lts wanting
-# linux-lts=6.12.29-1). DKMS floats: the mirror's linux + linux-headers and
-# archzfs's zfs-dkms are mutually consistent at build time, and on the
-# installed system omarchy-zfs's kernel guard prevents future skew.
-# The rest are omarchy-zfs/sanoid runtime deps not guaranteed to be in the
-# stock offline mirror's closure.
+# The target's zfs comes from the zfs-*-git packages built above (DKMS floats
+# with the kernel; archzfs's prebuilt modules and even its zfs-dkms release
+# lag Arch kernels too much to bake into an ISO). This list is the remaining
+# closure: headers for the target kernel plus omarchy-zfs/sanoid runtime deps
+# not guaranteed to be in the stock offline mirror.
 zfs_target_packages=(
-  linux linux-headers
-  zfs-dkms zfs-utils
+  linux linux-headers dkms
   perl-capture-tiny perl-list-moreutils perl-io-stringy libunwind
   efibootmgr dosfstools iwd
 )

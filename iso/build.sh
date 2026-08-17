@@ -73,6 +73,25 @@ grep -qxF "$anchor" "$work/builder/build-iso.sh" || {
 sed -i "s|^# Build the ISO\.\$|bash /builder/build-zfs-packages.sh \"\$build_cache_dir\"\n\n# Build the ISO.|" \
   "$work/builder/build-iso.sh"
 
+#    ...and hard-verify the zfs module after mkarchiso: the dkms hook only
+#    WARNS when the module fails to compile against the live kernel, and a
+#    live env without zfs.ko must never ship (observed with archzfs's
+#    zfs 2.3.3 vs linux-t2 7.1.8).
+anchor3='mkarchiso -v -w "$build_cache_dir/work/" -o /out/ "$build_cache_dir/"'
+grep -qF "$anchor3" "$work/builder/build-iso.sh" || {
+  echo "ERROR: mkarchiso anchor not found in upstream build-iso.sh — upstream moved; re-pin and adjust." >&2
+  exit 1
+}
+cat >> "$work/builder/build-iso.sh" <<'EOF'
+
+# [zfs] fail the build if the live env has no zfs kernel module
+if ! ls "$build_cache_dir"/work/x86_64/airootfs/usr/lib/modules/*/updates/dkms/zfs.ko* >/dev/null 2>&1; then
+  echo "ERROR: [zfs] no zfs.ko in the live airootfs — the dkms build failed (check the dkms warnings above)" >&2
+  exit 1
+fi
+echo ">>> [zfs] verified: zfs kernel module present in live airootfs"
+EOF
+
 # 3. .automated_script.sh: offer the ZFS path ahead of the stock configurator.
 #    Times out to "No" so cidata/unattended installs behave exactly like stock.
 boot_script="$work/configs/airootfs/root/.automated_script.sh"
