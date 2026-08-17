@@ -1,0 +1,10 @@
+#!/bin/bash
+# ZFS install entry point on the omarchy-zfs ISO. Everything is baked in:
+# packages come from the [offline] + [zfs-offline] mirrors, the ZBM EFI from
+# /usr/share/omarchy-zfs. The bootstrap does the rest interactively.
+set -euo pipefail
+
+export OMARCHY_ZFS_OFFLINE=1
+export OMARCHY_ZBM_EFI=/usr/share/omarchy-zfs/zbm/vmlinuz.EFI
+
+exec omarchy-bootstrap-zfs "$@"

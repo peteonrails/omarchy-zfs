@@ -6,9 +6,11 @@
 #
 # Runs from r-maerz/archlinux-lts-zfs (https://github.com/r-maerz/archlinux-lts-zfs/releases)
 # — an archlinux ISO with the LTS kernel and prebuilt zfs-linux-lts modules.
-# Performs the Phase 0 work that `omarchy/install.sh` doesn't: partitioning,
+# Performs the work the stock Quattro installer can't: partitioning,
 # zpool/dataset creation, pacstrap, chroot config, ZBM install, EFI boot
-# entry. Then hands off to `install.sh` inside the chroot.
+# entry. Then installs Omarchy + omarchy-zfs as packages and finalizes with
+# omarchy-apply-system / omarchy-provision-user. Also runs fully offline from
+# the omarchy-zfs ISO (OMARCHY_ZFS_OFFLINE=1, see iso/ in the repo).
 #
 # Why the LTS-zfs ISO instead of stock Arch: kernel and ZFS module versions
 # are atomically paired by archzfs's package release. No DKMS rebuild
@@ -70,6 +72,12 @@ readonly RECOMMENDED_ISO_URL="https://github.com/r-maerz/archlinux-lts-zfs/relea
 
 readonly MNT="/mnt"
 readonly ESP_MOUNT="${MNT}/boot/efi"
+
+# Offline mode: set by the omarchy-zfs ISO (see iso/ in the repo). Every
+# package comes from the ISO's baked-in mirrors, the ZBM EFI comes from
+# OMARCHY_ZBM_EFI, and Omarchy itself is installed as packages in pacstrap
+# rather than fetched from the network.
+readonly OFFLINE="${OMARCHY_ZFS_OFFLINE:-0}"
 
 # ============================================================================
 # Globals (populated by stages)
@@ -163,11 +171,19 @@ stage_preflight() {
     run pacman -Sy --noconfirm --needed gum
   fi
 
-  if ! ping -c1 -W2 archlinux.org &>/dev/null; then
+  if (( ! OFFLINE )) && ! ping -c1 -W2 archlinux.org &>/dev/null; then
     die "No network. Set up wifi (iwctl) or ethernet first."
   fi
 
-  log "preflight ok: euid=$EUID, efi=yes, network=yes"
+  # /etc/hostid must exist BEFORE the pool is created or imported, and gets
+  # copied into the target before its initramfs is built. The zfs initramfs
+  # hook refuses to import a pool whose last-import hostid doesn't match —
+  # the same mismatch class that broke the Phase-3 on-metal migration.
+  if [[ ! -s /etc/hostid ]]; then
+    run zgenhostid "$(hostid)"
+  fi
+
+  log "preflight ok: euid=$EUID, efi=yes, offline=$OFFLINE"
 }
 
 # ============================================================================
@@ -467,23 +483,55 @@ stage_mount_filesystems() {
 # ============================================================================
 
 stage_pacstrap() {
-  say "pacstrap (≈3 min — prebuilt packages, no DKMS build)"
-  run pacstrap -K "$MNT" \
-    base base-devel \
-    linux-lts linux-lts-headers linux-firmware \
-    sudo git iwd \
-    efibootmgr dosfstools \
+  # The target's initramfs is generated during this transaction (via the
+  # kernel's hook — and, when omarchy-zfs is in the list, our ensure-
+  # mkinitcpio self-heal hook). The hostid must already be in place or the
+  # resulting initramfs can't import the pool.
+  if ! (( DRY_RUN )); then
+    install -Dm644 /etc/hostid "$MNT/etc/hostid"
+  fi
+
+  local pkgs=(
+    base base-devel
+    linux-lts linux-lts-headers linux-firmware
+    sudo git iwd
+    efibootmgr dosfstools
     zfs-linux-lts zfs-utils
+  )
+  if (( OFFLINE )); then
+    # Quattro way: Omarchy and the ZFS layer are packages. Installing them in
+    # the same pacstrap transaction means omarchy-zfs's PostTransaction hooks
+    # (ensure-mkinitcpio, snapper guard) fire inside the target immediately,
+    # so the very first initramfs already carries the zfs hook.
+    pkgs+=(omarchy omarchy-zfs)
+    say "pacstrap full Omarchy + ZFS layer from the ISO's offline mirrors"
+  else
+    say "pacstrap (≈3 min — prebuilt packages, no DKMS build)"
+  fi
+
+  run pacstrap -K "$MNT" "${pkgs[@]}"
 
   # Mirror the ISO's archzfs repo configuration into the chroot so future
   # `pacman -Syu` runs there pull paired linux-lts + zfs-linux-lts updates
   # from archzfs as they're published.
-  if grep -q '^\[archzfs\]' /etc/pacman.conf && ! grep -q '^\[archzfs\]' "$MNT/etc/pacman.conf"; then
+  if ! grep -q '^\[archzfs\]' "$MNT/etc/pacman.conf"; then
     if (( DRY_RUN )); then
-      log "would copy archzfs section from /etc/pacman.conf into chroot"
+      log "would configure archzfs repo in chroot"
     else
-      awk '/^\[archzfs\]/,/^\[/{ if (/^\[/ && !/^\[archzfs\]/) exit; print }' /etc/pacman.conf \
-        | sudo tee -a "$MNT/etc/pacman.conf" >/dev/null
+      if grep -q '^\[archzfs\]' /etc/pacman.conf; then
+        awk '/^\[archzfs\]/,/^\[/{ if (/^\[/ && !/^\[archzfs\]/) exit; print }' /etc/pacman.conf \
+          | sudo tee -a "$MNT/etc/pacman.conf" >/dev/null
+      else
+        # Offline ISO: the live pacman.conf only knows the baked-in mirrors.
+        # Write the canonical archzfs section so post-boot `pacman -Syu` keeps
+        # pulling atomically paired linux-lts + zfs-linux-lts updates.
+        cat <<'EOF' | sudo tee -a "$MNT/etc/pacman.conf" >/dev/null
+
+[archzfs]
+Server = https://archzfs.com/$repo/$arch
+Server = https://zxcvfdsa.com/archzfs/$repo/$arch
+EOF
+      fi
       arch-chroot "$MNT" pacman-key --recv-keys DDF7DB817396A49B2A2723F7403BD972F75D9D76 2>/dev/null || true
       arch-chroot "$MNT" pacman-key --lsign-key DDF7DB817396A49B2A2723F7403BD972F75D9D76 2>/dev/null || true
     fi
@@ -612,10 +660,19 @@ stage_install_zbm() {
   local zbm_dir="${ESP_MOUNT}/EFI/zbm"
   run mkdir -p "$zbm_dir"
 
-  say "Downloading prebuilt ZBM EFI image"
-  if ! (( DRY_RUN )); then
-    curl -fsSL --location -o "$zbm_dir/vmlinuz.EFI" "$ZBM_RELEASE_URL" \
-      || die "Failed to download ZBM EFI image from $ZBM_RELEASE_URL"
+  # Prefer a locally provided image (the omarchy-zfs ISO bakes one in at
+  # /usr/share/omarchy-zfs/zbm/vmlinuz.EFI and points OMARCHY_ZBM_EFI at it),
+  # falling back to the network for stock live environments.
+  if [[ -r ${OMARCHY_ZBM_EFI:-} ]]; then
+    say "Installing bundled ZBM EFI image ($OMARCHY_ZBM_EFI)"
+    run install -m644 "$OMARCHY_ZBM_EFI" "$zbm_dir/vmlinuz.EFI"
+  else
+    (( OFFLINE )) && die "Offline install but no bundled ZBM image at \${OMARCHY_ZBM_EFI:-unset}"
+    say "Downloading prebuilt ZBM EFI image"
+    if ! (( DRY_RUN )); then
+      curl -fsSL --location -o "$zbm_dir/vmlinuz.EFI" "$ZBM_RELEASE_URL" \
+        || die "Failed to download ZBM EFI image from $ZBM_RELEASE_URL"
+    fi
   fi
 
   # Stage Omarchy's branding hooks into the chroot now so the post-install
@@ -671,31 +728,56 @@ stage_efi_boot_entry() {
 }
 
 # ============================================================================
-# Stage 15: hand off to omarchy/install.sh inside the chroot
+# Stage 15: install + finalize Omarchy (Quattro package flow)
+#
+# Quattro is served entirely from packages. Offline, `omarchy` and
+# `omarchy-zfs` were already installed by pacstrap from the ISO's mirrors;
+# online we add the official [omarchy] repo and install them here. Either
+# way, finalization mirrors what the stock ISO's orchestrator does:
+# `omarchy-apply-system` as root, then `omarchy-provision-user` as the user.
+# On ZFS our package's guards make both safe (snapper configs, mkinitcpio
+# hook, EFI boot order).
 # ============================================================================
 
-stage_run_omarchy_install() {
-  # Clone our fork into the chroot user's home and run install.sh from there.
-  # This mirrors how a user would normally run omarchy except we avoid the
-  # curl-pipe-bash because install.sh expects to live at $HOME/.local/share/omarchy.
-  local user_home="/home/$USERNAME_VAL"
-  local target="$user_home/.local/share/omarchy"
+readonly OMARCHY_GPG_KEY="40DFB630FF42BCFFB047046CF0134EE680CAC571"
 
+stage_run_omarchy_install() {
   if (( DRY_RUN )); then
-    log "would clone repo and run install.sh in chroot as $USERNAME_VAL"
+    log "would install omarchy + omarchy-zfs and run apply-system/provision-user in chroot"
     return 0
   fi
 
-  arch-chroot "$MNT" sudo -u "$USERNAME_VAL" mkdir -p "$user_home/.local/share"
-  arch-chroot "$MNT" sudo -u "$USERNAME_VAL" \
-    git clone "${OMARCHY_BOOTSTRAP_REPO:-https://github.com/peteonrails/omarchy-on-zfs.git}" "$target"
-  arch-chroot "$MNT" sudo -u "$USERNAME_VAL" \
-    git -C "$target" checkout "${OMARCHY_BOOTSTRAP_BRANCH:-omarchy-zfs}"
+  if ! (( OFFLINE )); then
+    if ! grep -q '^\[omarchy\]' "$MNT/etc/pacman.conf"; then
+      say "Configuring the official [omarchy] repo in the target"
+      cat <<'EOF' >> "$MNT/etc/pacman.conf"
 
-  # OMARCHY_CHROOT_INSTALL=1 tells limine-snapper.sh's password-sync block to skip
-  # — we already set the user password to match the encryption passphrase above.
-  arch-chroot "$MNT" sudo -u "$USERNAME_VAL" \
-    env OMARCHY_CHROOT_INSTALL=1 OMARCHY_PATH="$target" bash "$target/install.sh"
+[omarchy]
+Server = https://pkgs.omarchy.org/$arch
+EOF
+      arch-chroot "$MNT" pacman-key --recv-keys "$OMARCHY_GPG_KEY" 2>/dev/null || true
+      arch-chroot "$MNT" pacman-key --lsign-key "$OMARCHY_GPG_KEY" 2>/dev/null || true
+    fi
+    if ! grep -q '^\[omarchy-zfs\]' "$MNT/etc/pacman.conf"; then
+      # omarchy-zfs is AUR-source; the project serves a small unsigned binary
+      # repo so a chroot install needs no makepkg. Verifiable: same content as
+      # https://aur.archlinux.org/packages/omarchy-zfs.
+      cat <<'EOF' >> "$MNT/etc/pacman.conf"
+
+[omarchy-zfs]
+SigLevel = Optional TrustAll
+Server = https://omarchy-zfs.com/repo/any
+EOF
+    fi
+    say "Installing Omarchy + ZFS layer packages"
+    run arch-chroot "$MNT" pacman -Sy --noconfirm omarchy omarchy-zfs
+  fi
+
+  say "Finalizing system (omarchy-apply-system)"
+  run arch-chroot "$MNT" omarchy-apply-system
+
+  say "Provisioning user $USERNAME_VAL (omarchy-provision-user)"
+  run arch-chroot "$MNT" sudo -u "$USERNAME_VAL" omarchy-provision-user
 }
 
 # ============================================================================
