@@ -54,13 +54,14 @@ build_one() {
   local name="$1" src="$2" dst="$build_work/$1"
   cp -a "$src" "$dst"
   chown -R builder:builder "$dst"
-  # All three packages are arch=any script bundles: no build-time deps, so
-  # --nodeps is safe. Runtime deps resolve at install time across the two
-  # offline repos.
+  # All three packages are arch=any script bundles; the one build-time dep
+  # (perl-module-build) is preinstalled above, so --nodeps is safe. Runtime
+  # deps resolve at install time across the two offline repos.
   su builder -c "cd '$dst' && PKGDEST='$build_work' makepkg --noconfirm --nodeps -f"
 }
 
-pacman --noconfirm -Sy --needed git base-devel >/dev/null
+# perl-module-build: perl-config-inifiles' makedepends (Build.PL needs it).
+pacman --noconfirm -Sy --needed git base-devel perl-module-build >/dev/null
 
 # omarchy-zfs comes from the local checkout baked in by iso/build.sh — the ISO
 # always carries the exact working-tree version, not whatever the AUR has.
@@ -81,7 +82,7 @@ echo ">>> [zfs] downloading target-side ZFS stack into the zfs mirror"
 zfs_target_packages=(
   linux-lts linux-lts-headers
   zfs-linux-lts zfs-utils
-  perl-capture-tiny libunwind
+  perl-capture-tiny perl-list-moreutils perl-io-stringy libunwind
   efibootmgr dosfstools iwd
 )
 rm -rf /tmp/zfsdb
