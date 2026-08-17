@@ -112,17 +112,21 @@ rm -f "$zfs_repo_dir"/zfs-offline.db* "$zfs_repo_dir"/zfs-offline.files*
 find "$zfs_repo_dir" -name '*.pkg.tar.*' ! -name '*.sig' -print0 |
   xargs -0 repo-add "$zfs_repo_dir/zfs-offline.db.tar.gz"
 
-# The live/airootfs pacman.conf is the offline conf copied just above our
-# injection point; add the second mirror so pacstrap resolves across both.
-airootfs_conf="$build_cache_dir/airootfs/etc/pacman.conf"
-if ! grep -q '^\[zfs-offline\]' "$airootfs_conf"; then
-  cat >> "$airootfs_conf" <<'EOF'
+# Three confs need the [zfs-offline] repo:
+#   - airootfs/etc/pacman.conf: the booted live env + its pacstrap
+#   - pacman-offline.conf: profiledef.sh pins mkarchiso's airootfs install to
+#     it, so the live-env zfs packages above resolve from here
+# And like upstream's offline mirror, the file:// URL must resolve inside the
+# container, hence the symlink.
+ln -sfn "$zfs_repo_dir" /var/cache/omarchy/mirror/zfs
+for conf in "$build_cache_dir/airootfs/etc/pacman.conf" "$build_cache_dir/pacman-offline.conf"; do
+  grep -q '^\[zfs-offline\]' "$conf" || cat >> "$conf" <<'EOF'
 
 [zfs-offline]
 SigLevel = Never
 Server = file:///var/cache/omarchy/mirror/zfs
 EOF
-fi
+done
 
 echo ">>> [zfs] baking in the ZFSBootMenu EFI image"
 zbm_dir="$build_cache_dir/airootfs/usr/share/omarchy-zfs/zbm"
