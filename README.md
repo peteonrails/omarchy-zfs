@@ -135,13 +135,32 @@ the snapshot step. No currently-pending migration does this. The durable fix is
 upstream: `omarchy-snapshot` should skip non-btrfs roots, and `snapper.sh`
 should tolerate `create-config` failing.
 
-## Build
+## Install
+
+From the [AUR](https://aur.archlinux.org/packages/omarchy-zfs):
+
+```sh
+yay -S omarchy-zfs    # or paru, or makepkg from a manual AUR clone
+```
+
+Note: the `omarchy` dependency is satisfied by the real Omarchy package from
+`pkgs.omarchy.org` (already installed on any Omarchy system). The AUR package
+named `omarchy` is an unrelated third-party placeholder — don't build it.
+
+## Build from source
 
 ```sh
 makepkg -f            # or: makepkg -f --nodeps  (deps are runtime-only)
 ```
 
 Then serve from a local repo and install (see `PLAN-quattro-zfs.md` §3).
+
+## Releasing to the AUR
+
+```sh
+git tag -s vX.Y.Z && git push origin vX.Y.Z
+aur/release.sh        # derives the AUR PKGBUILD, test-builds, pushes
+```
 
 ## Status
 
