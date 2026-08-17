@@ -155,6 +155,15 @@ makepkg -f            # or: makepkg -f --nodeps  (deps are runtime-only)
 
 Then serve from a local repo and install (see `PLAN-quattro-zfs.md` §3).
 
+## The ISO
+
+For fresh machines: the official Omarchy ISO plus a root-on-ZFS install path,
+built without forking upstream. See [`iso/README.md`](iso/README.md).
+
+```sh
+iso/build.sh    # → iso/out/omarchy-zfs-*.iso   (needs docker, ~15GB)
+```
+
 ## Releasing to the AUR
 
 ```sh
