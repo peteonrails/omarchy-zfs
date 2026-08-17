@@ -1,23 +1,25 @@
 #!/bin/bash
 
-# Curl entry point for the omarchy-on-zfs bootstrap from an Arch live ISO.
+# Curl entry point for the omarchy-zfs bootstrap from a live ISO.
 #
-# Usage (from the Arch live ISO, as root):
-#   curl -fsSL https://raw.githubusercontent.com/peteonrails/omarchy-on-zfs/omarchy-zfs/bootstrap/iso-zfs.sh | bash
+# Usage (from a ZFS-capable Arch live ISO, as root):
+#   curl -fsSL https://omarchy-zfs.com/install | bash
+#   # or:
+#   curl -fsSL https://raw.githubusercontent.com/peteonrails/omarchy-zfs/main/bootstrap/iso-zfs.sh | bash
 #
 # Env overrides (rarely needed):
-#   OMARCHY_BOOTSTRAP_REPO   git URL (default: peteonrails/omarchy-on-zfs)
-#   OMARCHY_BOOTSTRAP_BRANCH git branch (default: omarchy-zfs)
-#   OMARCHY_BOOTSTRAP_DIR    clone target (default: /root/omarchy-on-zfs)
+#   OMARCHY_BOOTSTRAP_REPO   git URL (default: peteonrails/omarchy-zfs)
+#   OMARCHY_BOOTSTRAP_REF    git branch or tag (default: main)
+#   OMARCHY_BOOTSTRAP_DIR    clone target (default: /root/omarchy-zfs)
 
 set -euo pipefail
 
-REPO="${OMARCHY_BOOTSTRAP_REPO:-https://github.com/peteonrails/omarchy-on-zfs.git}"
-BRANCH="${OMARCHY_BOOTSTRAP_BRANCH:-omarchy-zfs}"
-TARGET="${OMARCHY_BOOTSTRAP_DIR:-/root/omarchy-on-zfs}"
+REPO="${OMARCHY_BOOTSTRAP_REPO:-https://github.com/peteonrails/omarchy-zfs.git}"
+REF="${OMARCHY_BOOTSTRAP_REF:-main}"
+TARGET="${OMARCHY_BOOTSTRAP_DIR:-/root/omarchy-zfs}"
 
 if [[ $EUID -ne 0 ]]; then
-  echo "Error: must run as root from the Arch live ISO" >&2
+  echo "Error: must run as root from a live ISO" >&2
   exit 1
 fi
 
@@ -27,11 +29,11 @@ fi
 
 if [[ -d $TARGET/.git ]]; then
   echo "Repo already at $TARGET — refreshing"
-  git -C "$TARGET" fetch origin "$BRANCH"
-  git -C "$TARGET" checkout "$BRANCH"
-  git -C "$TARGET" reset --hard "origin/$BRANCH"
+  git -C "$TARGET" fetch origin "$REF"
+  git -C "$TARGET" checkout "$REF"
+  git -C "$TARGET" reset --hard "origin/$REF" 2>/dev/null || true  # tags have no origin/ ref
 else
-  git clone --branch "$BRANCH" "$REPO" "$TARGET"
+  git clone --branch "$REF" "$REPO" "$TARGET"
 fi
 
 exec bash "$TARGET/bin/omarchy-bootstrap-zfs" "$@"
