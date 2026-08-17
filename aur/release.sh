@@ -54,6 +54,7 @@ if [[ "${1:-}" == "--no-push" ]]; then
   echo ">>> --no-push: AUR repo left at $workdir/aur (trap disabled)"
   trap - EXIT
 else
-  git push origin master
+  # AUR accepts only the master branch; local init.defaultBranch may differ.
+  git push origin HEAD:master
   echo ">>> pushed: https://aur.archlinux.org/packages/${pkgname}"
 fi
