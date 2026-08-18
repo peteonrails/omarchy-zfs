@@ -64,7 +64,7 @@ pacman --noconfirm -Sy --needed git base-devel perl-module-build \
 # always carries the exact working-tree version, not whatever the AUR has.
 build_one omarchy-zfs /builder/omarchy-zfs-src
 
-for aur_pkg in perl-config-inifiles sanoid zfs-utils-git zfs-dkms-git; do
+for aur_pkg in perl-config-inifiles sanoid zfs-utils-git zfs-dkms-git perl-boolean zfsbootmenu; do
   su builder -c "git clone --depth=1 'https://aur.archlinux.org/$aur_pkg.git' '$build_work/$aur_pkg-aur'"
   build_one "$aur_pkg" "$build_work/$aur_pkg-aur"
 done
@@ -81,6 +81,9 @@ zfs_target_packages=(
   linux linux-headers dkms
   perl-capture-tiny perl-list-moreutils perl-io-stringy libunwind
   efibootmgr dosfstools iwd
+  # zfsbootmenu runtime deps not in the stock mirror closure (perl-boolean is
+  # AUR-built above; openssl/ncurses/bash are already in base)
+  kexec-tools fzf mbuffer perl-sort-versions perl-yaml-pp
 )
 rm -rf /tmp/zfsdb
 mkdir -p /tmp/zfsdb

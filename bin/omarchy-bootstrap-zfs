@@ -398,10 +398,17 @@ stage_create_pool() {
   # -R /mnt sets the altroot so child datasets mount under /mnt without
   # rewriting their mountpoint properties. After reboot, no altroot is
   # active and the same datasets mount at their literal mountpoints.
+  # compatibility: cap feature flags at what ZFSBootMenu release builds can
+  # import. The live env runs zfs git-master, whose default feature set made
+  # the prebuilt ZBM panic ("Unsupported features detected") in the first VM
+  # validation. openzfs-2.4 matches current ZBM releases; the locally
+  # generated ZBM (preferred path) tolerates anything, but the prebuilt
+  # fallback and third-party rescue media must be able to import the pool.
   # shellcheck disable=SC2086
   run zpool create -f \
     -o ashift=12 \
     -o autotrim=on \
+    -o compatibility=openzfs-2.4-linux \
     -O acltype=posixacl -O xattr=sa -O dnodesize=auto \
     -O compression=zstd \
     -O normalization=formD \
@@ -552,7 +559,10 @@ stage_pacstrap() {
     # zfs-dkms release lags current kernels; the git snapshot (built into the
     # ISO's [zfs-offline] mirror) tracks them. The omarchy-zfs kernel guard
     # prevents future skew.
-    pkgs+=(linux linux-headers zfs-dkms-git zfs-utils-git omarchy omarchy-zfs)
+    # zfsbootmenu: the generator, so stage_install_zbm can build a branded,
+    # feature-matched ZBM image locally instead of shipping the vanilla
+    # prebuilt EFI (no first-boot branding follow-up).
+    pkgs+=(linux linux-headers zfs-dkms-git zfs-utils-git zfsbootmenu omarchy omarchy-zfs)
 
     # The full Omarchy base manifest, not just the meta-package's dependency
     # closure: things like docker live only in the package list, and
@@ -735,24 +745,8 @@ stage_install_zbm() {
   local zbm_dir="${ESP_MOUNT}/EFI/zbm"
   run mkdir -p "$zbm_dir"
 
-  # Prefer a locally provided image (the omarchy-zfs ISO bakes one in at
-  # /usr/share/omarchy-zfs/zbm/vmlinuz.EFI and points OMARCHY_ZBM_EFI at it),
-  # falling back to the network for stock live environments.
-  if [[ -r ${OMARCHY_ZBM_EFI:-} ]]; then
-    say "Installing bundled ZBM EFI image ($OMARCHY_ZBM_EFI)"
-    run install -m644 "$OMARCHY_ZBM_EFI" "$zbm_dir/vmlinuz.EFI"
-  else
-    (( OFFLINE )) && die "Offline install but no bundled ZBM image at \${OMARCHY_ZBM_EFI:-unset}"
-    say "Downloading prebuilt ZBM EFI image"
-    if ! (( DRY_RUN )); then
-      curl -fsSL --location -o "$zbm_dir/vmlinuz.EFI" "$ZBM_RELEASE_URL" \
-        || die "Failed to download ZBM EFI image from $ZBM_RELEASE_URL"
-    fi
-  fi
-
-  # Stage Omarchy's branding hooks into the chroot now so the post-install
-  # `generate-zbm` (run by install.sh) picks them up immediately if the user
-  # later installs zfsbootmenu via AUR.
+  # Config + hook dirs first: generate-zbm and any later regeneration read
+  # them; the omarchy-zfs package supplies the branded hooks themselves.
   if ! (( DRY_RUN )); then
     mkdir -p "$MNT/etc/zfsbootmenu/hooks/setup.d" "$MNT/etc/zfsbootmenu/hooks/load-key.d"
     cat > "$MNT/etc/zfsbootmenu/config.yaml" <<EOF
@@ -770,6 +764,35 @@ EFI:
 Kernel:
   CommandLine: quiet loglevel=0 zbm.skip_hooks=
 EOF
+  fi
+
+  # Preferred: generate ZBM inside the target — its zfs matches the pool's
+  # feature flags exactly, and the Omarchy hooks are baked in, so there is no
+  # first-boot branding follow-up. The zfsbootmenu package comes from the
+  # ISO's [zfs-offline] mirror (offline) or the AUR (manual installs).
+  if (( DRY_RUN )); then
+    log "would run generate-zbm in the chroot (or install a prebuilt image)"
+    return 0
+  fi
+  if arch-chroot "$MNT" bash -c 'command -v generate-zbm' &>/dev/null; then
+    say "Generating branded ZFSBootMenu in the target (generate-zbm)"
+    if arch-chroot "$MNT" generate-zbm && [[ -s "$zbm_dir/vmlinuz.EFI" ]]; then
+      return 0
+    fi
+    warn "generate-zbm did not produce $zbm_dir/vmlinuz.EFI — falling back to the prebuilt image"
+  fi
+
+  # Fallback: prebuilt release EFI — bundled on the omarchy-zfs ISO, fetched
+  # from the network on stock live environments. Boots thanks to the pool's
+  # compatibility cap; branding then arrives with the first generate-zbm.
+  if [[ -r ${OMARCHY_ZBM_EFI:-} ]]; then
+    say "Installing bundled ZBM EFI image ($OMARCHY_ZBM_EFI)"
+    run install -m644 "$OMARCHY_ZBM_EFI" "$zbm_dir/vmlinuz.EFI"
+  else
+    (( OFFLINE )) && die "Offline install but no bundled ZBM image at \${OMARCHY_ZBM_EFI:-unset}"
+    say "Downloading prebuilt ZBM EFI image"
+    curl -fsSL --location -o "$zbm_dir/vmlinuz.EFI" "$ZBM_RELEASE_URL" \
+      || die "Failed to download ZBM EFI image from $ZBM_RELEASE_URL"
   fi
 }
 
@@ -901,14 +924,22 @@ Next:
   - select ${DATASET_ROOT}
   - log in as $USERNAME_VAL with the same passphrase
 
+$(if (( OFFLINE )); then
+  cat <<'KERNEL'
+Kernel + ZFS: linux with zfs-dkms-git. The omarchy-zfs kernel guard blocks
+any kernel upgrade the ZFS module can't build against, so `omarchy update`
+stays boot-safe.
+KERNEL
+else
+  cat <<'KERNEL'
 Kernel + ZFS: linux-lts paired with prebuilt zfs-linux-lts. Future updates
 flow atomically — when archzfs publishes a new linux-lts/zfs-linux-lts
-pair, \`omarchy-update\` (or plain \`pacman -Syu\`) pulls them together.
+pair, `omarchy-update` (or plain `pacman -Syu`) pulls them together.
+KERNEL
+fi)
 
-Branding follow-up (after first boot):
-  - install yay (or paru)
-  - yay -S zfsbootmenu
-  - sudo generate-zbm    # rebuilds ZBM with the Omarchy hooks staged in /etc/zfsbootmenu/hooks
+ZFSBootMenu was generated in the target with the Omarchy theme and unlock
+hooks — no follow-up needed. Regenerate any time with omarchy-refresh-zbm.
 
 Logs: $LOG_FILE
 EOF
