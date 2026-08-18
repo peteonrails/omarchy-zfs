@@ -536,10 +536,16 @@ stage_mount_filesystems() {
   # the pool key and the user's entire home directory got shadowed in VM
   # validation — an install that looked perfect and then couldn't log in.
   if ! (( DRY_RUN )); then
+    # The pool is imported with altroot -R "$MNT", so a dataset whose
+    # mountpoint property says /home is actually mounted at $MNT/home.
+    # Checking the property path matched unrelated mounts on the live ISO and
+    # passed vacuously — /mnt/home was NOT mounted, useradd -m wrote the home
+    # into the ROOT dataset, and the greeter then died on chdir(/home/pete).
     local ds mp missing=()
     while read -r ds mp; do
       [[ $mp == none || $mp == legacy || $mp == "-" ]] && continue
-      findmnt -n "$mp" >/dev/null || missing+=("$ds -> $mp")
+      findmnt -n "$MNT${mp#/}" >/dev/null 2>&1 || findmnt -n "$MNT$mp" >/dev/null 2>&1 ||
+        missing+=("$ds -> $MNT$mp")
     done < <(zfs list -H -r -o name,mountpoint "$POOL_NAME")
     if (( ${#missing[@]} )); then
       printf '  %s\n' "${missing[@]}" >&2
@@ -726,6 +732,13 @@ EOF
 
   say "Creating user $USERNAME_VAL"
   if ! (( DRY_RUN )); then
+    # The home dataset MUST be mounted before useradd -m, or the new home
+    # lands in the ROOT dataset and vanishes under the mount at first boot —
+    # authentication then succeeds and the session dies on chdir().
+    zfs mount "$DATASET_HOME" 2>/dev/null || true
+    findmnt -n "$MNT/home" >/dev/null 2>&1 ||
+      die "$DATASET_HOME is not mounted at $MNT/home; refusing to create a home that would be shadowed at boot"
+
     # Idempotent for --resume re-runs of this stage.
     arch-chroot "$MNT" id -u "$USERNAME_VAL" &>/dev/null ||
       arch-chroot "$MNT" useradd -m -G wheel,audio,video,input,storage,lp,sys,network,users,rfkill "$USERNAME_VAL"
