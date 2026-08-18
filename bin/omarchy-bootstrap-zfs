@@ -762,19 +762,14 @@ EOF
       die "$DATASET_KEYSTORE is not mounted at $MNT/etc/zfs/keys; refusing to write the key where it would be shadowed"
     install -Dm600 "$KEYFILE_TMP" "$MNT$KEYFILE_FINAL"
 
-    # keylocation stays `prompt` for the ROOT pool, deliberately.
-    #
-    # Pointing it at a keyfile that lives INSIDE the encrypted pool is a
-    # chicken-and-egg: the initramfs cannot read it before the pool is
-    # unlocked, so it fell back to a prompt whose input path did not work —
-    # a correct passphrase came back "Incorrect key provided" while the very
-    # same passphrase unlocked the pool fine from a live system. Two working
-    # prompts beat one broken one.
-    #
-    # The key file still lives in the keystore dataset: it is what unlocks
-    # child datasets and secondary pools once the root is up, and it is the
-    # material ZFSBootMenu can inject via keysource once that path is proven.
-    run zfs set keylocation=prompt "$POOL_NAME"
+    # Point the pool at the keystore file and embed that file in the in-pool
+    # initramfs (omarchy-zfs-ensure-mkinitcpio writes the standalone ZBM
+    # config that does it). ZFSBootMenu asks for the passphrase once; the
+    # kexec'd initramfs then unlocks silently from the embedded key instead
+    # of asking again through a prompt that rejected correct passphrases.
+    # The key never reaches the unencrypted ESP — omarchy-refresh-zbm
+    # verifies that on every rebuild.
+    arch-chroot "$MNT" zfs change-key -o "keylocation=file://$KEYFILE_FINAL" "$POOL_NAME"
     run zfs set "org.zfsbootmenu:keysource=$DATASET_KEYSTORE" "$POOL_NAME"
   fi
 
@@ -978,6 +973,10 @@ EOF
   # Deterministic initramfs pass: hooks inside pacstrap have gates of their
   # own (the kernel compat check vetoed -P on META grounds in validation), so
   # build every preset explicitly rather than trusting they fired.
+  # Generate the standalone ZBM config (effective hooks + embedded pool key)
+  # before building, so the in-pool image can unlock without a prompt.
+  run arch-chroot "$MNT" omarchy-zfs-ensure-mkinitcpio
+
   say "Building all initramfs presets (mkinitcpio -P)"
   run arch-chroot "$MNT" mkinitcpio -P
 }
