@@ -836,10 +836,10 @@ EOF
   fi
 
   say "Finalizing system (omarchy-apply-system)"
-  run arch-chroot "$MNT" omarchy-apply-system
+  run arch-chroot "$MNT" omarchy-apply-system --install-user "$USERNAME_VAL" --first-install
 
   say "Provisioning user $USERNAME_VAL (omarchy-provision-user)"
-  run arch-chroot "$MNT" sudo -u "$USERNAME_VAL" omarchy-provision-user
+  run arch-chroot "$MNT" sudo -u "$USERNAME_VAL" omarchy-provision-user --first-install
 }
 
 # ============================================================================
