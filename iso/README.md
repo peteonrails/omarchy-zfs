@@ -51,12 +51,23 @@ Validated in QEMU (UEFI, virtio) on 2026-08-18:
 
 ### Known issues
 
-- **Two passphrase prompts.** ZFSBootMenu unlocks the pool, then the target's
-  initramfs asks again — invisibly, behind Plymouth. The keyfile lives inside the
-  encrypted pool, so the initramfs cannot read it. `org.zfsbootmenu:keysource` is
-  set (ZBM should inject the key into the initramfs it kexecs) but did not take
-  effect on the *prebuilt* ZBM image; retest against the locally generated one.
-  Embedding the key via `FILES+=` works, but must never reach the ESP's UKI.
+- **The initramfs passphrase prompt rejects a correct passphrase.** This is the
+  one blocker. ZFSBootMenu unlocks the pool with the passphrase, kexecs, and then
+  the target's initramfs prompts again and answers `Incorrect key provided` for
+  the *same* string — which unlocks the pool without complaint from a live system
+  or the host (verified both with and without a trailing newline, and with
+  `keylocation` set to `prompt` rather than a keyfile). Everything outside the
+  initramfs agrees on the key; only the initramfs disagrees.
+
+  Prime suspect: the ISO builds ZFS from **git master** (`zfs-dkms-git` /
+  `zfs-utils-git`, currently 2.4.99), so the initramfs carries master's userspace.
+  archzfs's release packages lag current kernels, which is why git was chosen —
+  that tradeoff needs revisiting. Next steps, cheapest first: reproduce the prompt
+  in the live ISO (`zfs load-key -L prompt` there, same binaries) to confirm it is
+  the userspace and not the console; if confirmed, pin a release ZFS for the
+  target; independently, make `org.zfsbootmenu:keysource` actually inject the key
+  so there is only one prompt at all. Embedding the key via `FILES+=` also works
+  but must never reach the ESP's UKI.
 - **No journal storage** was observed on an install whose ZFS units were disabled;
   enabling them (now done at install time) should restore persistent logs — verify.
 - **SDDM ships no `/var/lib/sddm/state.conf`**, so the password-only Omarchy theme
