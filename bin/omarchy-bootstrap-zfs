@@ -58,7 +58,12 @@ readonly DATASET_VARLIB_MACHINES="${DATASET_VARLIB}/machines"
 readonly DATASET_KEYSTORE="${POOL_NAME}/keystore"
 
 readonly KEYFILE_TMP="/tmp/omarchy-bootstrap.key"
-readonly KEYFILE_FINAL="/etc/zfs/keys/${POOL_NAME}.key"
+# The POOL's own key lives in the ROOT dataset, not in the keystore dataset:
+# zroot/keystore mounts at /etc/zfs/keys only once zfs-mount runs, and anything
+# written there earlier is shadowed the moment it does (cost us two debugging
+# rounds). The keystore dataset remains for keys of OTHER pools/datasets, which
+# are unlocked well after boot.
+readonly KEYFILE_FINAL="/etc/zfs/${POOL_NAME}.key"
 
 readonly STATE_FILE="/tmp/omarchy-bootstrap-zfs.state"
 readonly VARS_FILE="/tmp/omarchy-bootstrap-zfs.vars"
@@ -753,14 +758,11 @@ EOF
 
   say "Persisting key into ${DATASET_KEYSTORE} and switching to file-based keylocation"
   if ! (( DRY_RUN )); then
-    # The keystore is its own dataset mounted at /etc/zfs/keys. If it is not
-    # mounted when we write, the key lands in the ROOT dataset and the
-    # keystore mount shadows it at boot — the initramfs then finds no key
-    # material and prompts from behind Plymouth (VM validation).
-    zfs mount "$DATASET_KEYSTORE" 2>/dev/null || true
-    findmnt -n "$MNT/etc/zfs/keys" >/dev/null ||
-      die "$DATASET_KEYSTORE is not mounted at $MNT/etc/zfs/keys; refusing to write the key where it would be shadowed"
+    # Written into the ROOT dataset (see KEYFILE_FINAL) so no later mount can
+    # shadow it, and so it is readable the instant the root is mounted.
     install -Dm600 "$KEYFILE_TMP" "$MNT$KEYFILE_FINAL"
+    findmnt -n "$MNT/etc/zfs" >/dev/null &&
+      die "something is mounted at $MNT/etc/zfs — the pool key would be shadowed at boot"
 
     # Point the pool at the keystore file and embed that file in the in-pool
     # initramfs (omarchy-zfs-ensure-mkinitcpio writes the standalone ZBM
