@@ -36,11 +36,31 @@ iso/build.sh    # anchored edits fail loudly if upstream restructured
 
 ## Status / validation
 
-- [ ] Build completes (docker run of the full pipeline)
-- [ ] Live ISO boots and `zpool` works (QEMU: `iso/.work/omarchy-iso/bin/omarchy-iso-boot`)
+Validated in QEMU (UEFI, virtio) on 2026-08-18:
+
+- [x] Build completes, and fails the build if `zfs.ko` is missing from the live airootfs
+- [x] Live ISO boots; `zpool` works in the live environment
+- [x] ZFS install end-to-end: wizard → offline pacstrap of full Omarchy → ZBM →
+      passphrase → kexec → initramfs → encrypted ZFS root → systemd → SDDM → desktop
+- [x] Encrypted whole-pool install (native ZFS encryption, no LUKS/LVM)
+- [ ] Untouched run on an image carrying every fix (no mid-install patching)
+- [ ] Login password matches the pool passphrase on a fresh install
+- [ ] Single passphrase prompt (see Known issues)
 - [ ] Stock btrfs install still works from this ISO
-- [ ] ZFS install end-to-end in a VM (wizard → reboot → ZBM → Omarchy session)
-- [ ] Encrypted ZFS install + hibernation
+- [ ] Hibernation on a zvol swap
+
+### Known issues
+
+- **Two passphrase prompts.** ZFSBootMenu unlocks the pool, then the target's
+  initramfs asks again — invisibly, behind Plymouth. The keyfile lives inside the
+  encrypted pool, so the initramfs cannot read it. `org.zfsbootmenu:keysource` is
+  set (ZBM should inject the key into the initramfs it kexecs) but did not take
+  effect on the *prebuilt* ZBM image; retest against the locally generated one.
+  Embedding the key via `FILES+=` works, but must never reach the ESP's UKI.
+- **No journal storage** was observed on an install whose ZFS units were disabled;
+  enabling them (now done at install time) should restore persistent logs — verify.
+- **SDDM ships no `/var/lib/sddm/state.conf`**, so the password-only Omarchy theme
+  has no user selected. Writing `[Last] User=…` makes the greeter usable.
 
 The ZFS install path reuses `bin/omarchy-bootstrap-zfs`, whose stage 15 was
 rewritten for Quattro (packages + `omarchy-apply-system` +
