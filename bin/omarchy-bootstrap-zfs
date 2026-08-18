@@ -728,8 +728,24 @@ EOF
     # the same thing on first run; we set it here so the user can log in immediately
     # after reboot in case install.sh password-sync is skipped via OMARCHY_CHROOT_INSTALL).
     if [[ -r $KEYFILE_TMP ]]; then
-      printf '%s\n%s\n' "$(cat "$KEYFILE_TMP")" "$(cat "$KEYFILE_TMP")" \
-        | arch-chroot "$MNT" passwd "$USERNAME_VAL"
+      # chpasswd, not passwd: passwd reads the tty in ways that mangle piped
+      # input, and an install whose login password silently diverged from the
+      # pool passphrase is unusable (VM validation — neither the passphrase
+      # nor anything else opened the session).
+      printf '%s:%s\n' "$USERNAME_VAL" "$(cat "$KEYFILE_TMP")" \
+        | arch-chroot "$MNT" chpasswd
+
+      # Verify the stored hash actually matches the passphrase before moving
+      # on. Cheap, and the only way to know the user can log in later.
+      if ! arch-chroot "$MNT" perl -e '
+            my ($u, $p) = @ARGV;
+            open(my $f, "<", "/etc/shadow") or exit 2;
+            while (<$f>) { if (/^\Q$u\E:([^:]+)/) { exit(crypt($p, $1) eq $1 ? 0 : 1) } }
+            exit 3
+          ' "$USERNAME_VAL" "$(cat "$KEYFILE_TMP")"; then
+        die "Login password for $USERNAME_VAL does not match the pool passphrase — refusing to continue"
+      fi
+      say "Login password verified (matches the pool passphrase)"
     fi
     echo '%wheel ALL=(ALL) NOPASSWD: ALL' > "$MNT/etc/sudoers.d/wheel"
     chmod 440 "$MNT/etc/sudoers.d/wheel"
