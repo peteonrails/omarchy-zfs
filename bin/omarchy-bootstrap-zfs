@@ -325,6 +325,20 @@ stage_disk_selection() {
 stage_partition_disks() {
   if (( USE_EXISTING_POOL )); then return 0; fi
 
+  # A previous attempt may have left the ESP mounted and the pool imported.
+  # mkfs.fat then refuses ("contains a mounted filesystem") and zpool create
+  # trips over the existing pool, so a restart after any failure needs a
+  # human to clean up. Do it here instead.
+  if ! (( DRY_RUN )); then
+    umount -R "$ESP_MOUNT" 2>/dev/null || true
+    umount -R "$MNT" 2>/dev/null || true
+    if zpool list -H -o name 2>/dev/null | grep -qx "$POOL_NAME"; then
+      warn "Exporting a previously imported $POOL_NAME before repartitioning"
+      zfs unmount -a 2>/dev/null || true
+      zpool export "$POOL_NAME" 2>/dev/null || true
+    fi
+  fi
+
   ZFS_PARTITIONS=()
 
   for i in "${!TARGET_DISKS[@]}"; do
