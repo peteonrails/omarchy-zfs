@@ -827,8 +827,14 @@ EOF
     cp /etc/zfs/zpool.cache "$MNT/etc/zfs/zpool.cache"
   fi
 
+  # No `splash`: Plymouth covers the console, and if the initramfs ever has to
+  # ask for the pool passphrase (embedded key missing, keyfile moved, a BE
+  # restored from a snapshot) the prompt is invisible — the user stares at a
+  # logo while a hidden prompt eats their keystrokes. Cost hours in VM
+  # validation. A visible boot beats a pretty one on an encrypted root; add
+  # `splash` back yourself once you trust the unlock path.
   say "Setting org.zfsbootmenu:commandline"
-  run zfs set "org.zfsbootmenu:commandline=quiet splash rw" "$DATASET_ROOT"
+  run zfs set "org.zfsbootmenu:commandline=rw" "$DATASET_ROOT"
 }
 
 # ============================================================================
@@ -1037,6 +1043,18 @@ stage_finalize() {
       fi
     done
     ls "$MNT"/boot/efi/EFI/zbm/*.EFI &>/dev/null || { warn "no ZBM image on the ESP"; ok=0; }
+
+    # Single-prompt unlock depends on the pool key being inside the in-pool
+    # image. Not fatal (the boot still works, you just get a second prompt),
+    # but say so plainly rather than letting the user discover it at boot.
+    if [[ $(zfs get -H -o value keylocation "$POOL_NAME" 2>/dev/null) == file://* ]]; then
+      if arch-chroot "$MNT" lsinitcpio -l /boot/initramfs-linux.img 2>/dev/null |
+           grep -q "${KEYFILE_FINAL#/}"; then
+        say "Verified: pool key embedded in the in-pool initramfs (single passphrase prompt)"
+      else
+        warn "pool key is NOT embedded in the initramfs — expect a second passphrase prompt at boot"
+      fi
+    fi
     [[ -s "$MNT/etc/hostid" ]] || { warn "target is missing /etc/hostid"; ok=0; }
     (( ok )) || die "Boot-readiness verification FAILED — fix the above before rebooting (nothing has been unmounted)"
     say "Boot-readiness verified: kernel+initramfs pairs, ZBM image, hostid"
