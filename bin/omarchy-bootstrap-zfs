@@ -909,6 +909,12 @@ EOF
   if ! (( DRY_RUN )); then
     rm -rf "$MNT/opt/packages"
   fi
+
+  # Deterministic initramfs pass: hooks inside pacstrap have gates of their
+  # own (the kernel compat check vetoed -P on META grounds in validation), so
+  # build every preset explicitly rather than trusting they fired.
+  say "Building all initramfs presets (mkinitcpio -P)"
+  run arch-chroot "$MNT" mkinitcpio -P
 }
 
 # ============================================================================
@@ -916,6 +922,25 @@ EOF
 # ============================================================================
 
 stage_finalize() {
+  # Boot-readiness gate: never print "Bootstrap complete" for a target that
+  # can't boot. ZBM kexecs a kernel+initramfs pair from /boot — a missing
+  # initramfs panics with "VFS: Unable to mount root fs" (three VM runs).
+  if ! (( DRY_RUN )); then
+    local ok=1 k name
+    for k in "$MNT"/boot/vmlinuz-*; do
+      [[ -e $k ]] || continue
+      name=$(basename "$k"); name=${name#vmlinuz-}
+      if [[ ! -s "$MNT/boot/initramfs-${name}.img" ]]; then
+        warn "target /boot has ${name} kernel but no initramfs-${name}.img"
+        ok=0
+      fi
+    done
+    ls "$MNT"/boot/efi/EFI/zbm/*.EFI &>/dev/null || { warn "no ZBM image on the ESP"; ok=0; }
+    [[ -s "$MNT/etc/hostid" ]] || { warn "target is missing /etc/hostid"; ok=0; }
+    (( ok )) || die "Boot-readiness verification FAILED — fix the above before rebooting (nothing has been unmounted)"
+    say "Boot-readiness verified: kernel+initramfs pairs, ZBM image, hostid"
+  fi
+
   say "Unmounting"
   if ! (( DRY_RUN )); then
     sync

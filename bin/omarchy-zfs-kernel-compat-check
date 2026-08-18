@@ -53,6 +53,21 @@ fi
 target_xyz="${pkgver%%.arch*}"
 target_xy="${target_xyz%.*}"  # 7.0.3 -> 7.0
 
+# Evidence beats metadata: if DKMS has already BUILT zfs.ko for this kernel,
+# it is compatible regardless of what META claims. git-master's conservative
+# Linux-Maximum otherwise vetoes kernels the module demonstrably builds for —
+# which silently skipped every initramfs regen during ISO installs and
+# shipped an unbootable target (VM validation, 2026-08-18).
+if [[ $mode == installed ]]; then
+  for _mdir in /usr/lib/modules/*/; do
+    [[ -e ${_mdir}updates/dkms/zfs.ko || -e ${_mdir}updates/dkms/zfs.ko.zst ]] || continue
+    _mver=$(basename "$_mdir")
+    if [[ ${_mver%%-*} == "$target_xyz" ]]; then
+      exit 0
+    fi
+  done
+fi
+
 # Read zfs-dkms's META file for Linux-Maximum
 meta=$(grep -hE '^Linux-Maximum:' /usr/src/zfs-*/META 2>/dev/null | awk '{print $2}' | head -1)
 if [[ -z $meta ]]; then
