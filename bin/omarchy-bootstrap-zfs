@@ -1004,8 +1004,21 @@ stage_finalize() {
   say "Unmounting"
   if ! (( DRY_RUN )); then
     sync
-    umount -R "$MNT" || warn "Some mounts didn't unmount cleanly"
-    zpool export "$POOL_NAME" || warn "Pool export failed (will be auto-imported on boot regardless)"
+    # umount -R leaves the ZFS datasets themselves mounted (they are not
+    # fstab entries), so the export found the pool busy. Unmount the ESP,
+    # then let ZFS unmount its own datasets deepest-first, then export.
+    umount -R "$ESP_MOUNT" 2>/dev/null || true
+    umount -R "$MNT" 2>/dev/null || true
+    zfs unmount -a 2>/dev/null || true
+    local try
+    for try in 1 2 3; do
+      zpool export "$POOL_NAME" && break
+      sleep 2
+      fuser -mk "$MNT" 2>/dev/null || true
+    done
+    if zpool list -H -o name 2>/dev/null | grep -qx "$POOL_NAME"; then
+      warn "Pool export failed (it will be auto-imported on boot; the hostid embedded in the initramfs makes that safe)"
+    fi
   fi
 
   printf '\n\033[1;32m✓ Bootstrap complete.\033[0m\n\n'
