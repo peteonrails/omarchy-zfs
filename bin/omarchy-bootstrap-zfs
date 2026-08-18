@@ -323,7 +323,11 @@ stage_partition_disks() {
     fi
   done
 
-  run partprobe
+  # Only probe the disks we touched: a bare partprobe rescans every block
+  # device, and parted errors out on the live ISO's own CD-ROM hybrid
+  # partition table ("Can't have a partition outside the disk!"), killing
+  # the script under set -e. Observed in the first ISO VM run.
+  run partprobe "${TARGET_DISKS[@]}"
   sleep 2
 
   say "Formatting ESP at $ESP_DEVICE"
