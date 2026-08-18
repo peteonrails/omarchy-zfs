@@ -14,3 +14,25 @@ if command -v generate-zbm &>/dev/null; then
   echo "Regenerating ZFSBootMenu"
   sudo generate-zbm
 fi
+
+# The in-pool initramfs may embed the pool keyfile so the kexec'd kernel can
+# unlock without a second passphrase prompt. That is safe only while the key
+# stays inside the encrypted pool — the ESP is unencrypted and anyone with the
+# disk can read it. Verify, loudly, on every refresh.
+keyfile=$(zpool list -H -o name 2>/dev/null | while read -r p; do
+            loc=$(zfs get -H -o value keylocation "$p" 2>/dev/null)
+            [[ $loc == file://* ]] && { echo "${loc#file://}"; break; }
+          done)
+if [[ -n $keyfile && -r $keyfile ]] && command -v findmnt &>/dev/null; then
+  esp=$(findmnt -n -o TARGET -t vfat | head -1)
+  if [[ -n $esp ]]; then
+    leaked=$(sudo grep -rlF "$(sudo cat "$keyfile")" "$esp" 2>/dev/null | head -3)
+    if [[ -n $leaked ]]; then
+      echo "omarchy-refresh-zbm: SECURITY — the pool key appears on the unencrypted ESP:" >&2
+      printf '  %s\n' $leaked >&2
+      echo "  Remove those images, then rebuild. The key belongs only in /boot inside the pool." >&2
+      exit 1
+    fi
+    echo "Verified: pool key is not present on the ESP"
+  fi
+fi
