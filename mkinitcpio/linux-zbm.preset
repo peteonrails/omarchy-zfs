@@ -10,7 +10,11 @@
 # installed. On systems that also keep the stock preset this rebuilds the
 # same image path — harmless.
 
-ALL_config="/etc/mkinitcpio.conf"
+# No ALL_config here, deliberately: naming a config file makes mkinitcpio
+# pass -c, and an explicit -c SKIPS /etc/mkinitcpio.conf.d drop-ins — which
+# silently dropped the zfs hook chain and built systemd-flavored images
+# (ISO VM validation, 2026-08-18). Omitting it uses the default config plus
+# drop-ins, like modern stock presets.
 PRESETS=()
 
 for _k in linux linux-lts; do
