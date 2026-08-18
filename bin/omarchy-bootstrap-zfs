@@ -614,7 +614,13 @@ prompt_chroot_basics() {
   HOSTNAME_VAL=$(gum input --header "Hostname" --value "omarchy")
   TIMEZONE_VAL=$(gum input --header "Timezone (e.g. America/New_York)" --value "UTC")
   LOCALE_VAL=$(gum input  --header "Locale" --value "en_US.UTF-8")
-  USERNAME_VAL=$(gum input --header "Username" --value "$(logname 2>/dev/null || echo user)")
+  # No logname default: on a live ISO it is always "root", and an accepted
+  # default silently made root the target user (first ISO VM run).
+  USERNAME_VAL=$(gum input --header "Username (your daily login, not root)" --placeholder "user")
+  while [[ -z $USERNAME_VAL || $USERNAME_VAL == root ]]; do
+    warn "Pick a non-root username"
+    USERNAME_VAL=$(gum input --header "Username (your daily login, not root)" --placeholder "user")
+  done
   [[ -n $HOSTNAME_VAL && -n $TIMEZONE_VAL && -n $LOCALE_VAL && -n $USERNAME_VAL ]] \
     || die "All chroot prompts are required"
 }
@@ -684,7 +690,7 @@ EOF
 
   say "Persisting key into ${DATASET_KEYSTORE} and switching to file-based keylocation"
   if ! (( DRY_RUN )); then
-    install -m 600 "$KEYFILE_TMP" "$MNT$KEYFILE_FINAL"
+    install -Dm600 "$KEYFILE_TMP" "$MNT$KEYFILE_FINAL"
     # Run change-key inside the chroot so the file:// path resolves correctly.
     # The kernel ZFS state is shared between live ISO and chroot, so this
     # updates the same imported pool either way.
