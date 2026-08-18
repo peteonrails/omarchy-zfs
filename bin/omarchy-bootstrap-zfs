@@ -660,12 +660,17 @@ EnableNetworkConfiguration=false
 [Network]
 NameResolvingService=systemd
 EOF
-    arch-chroot "$MNT" ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+    # Not via arch-chroot: it bind-mounts the host's resolv.conf (already a
+    # symlink to stub-resolv.conf) over the target's, so ln sees source and
+    # destination as the same file and fails. Write the target path directly.
+    ln -sfn /run/systemd/resolve/stub-resolv.conf "$MNT/etc/resolv.conf"
   fi
 
   say "Creating user $USERNAME_VAL"
   if ! (( DRY_RUN )); then
-    arch-chroot "$MNT" useradd -m -G wheel,audio,video,input,storage,lp,sys,network,users,rfkill "$USERNAME_VAL"
+    # Idempotent for --resume re-runs of this stage.
+    arch-chroot "$MNT" id -u "$USERNAME_VAL" &>/dev/null ||
+      arch-chroot "$MNT" useradd -m -G wheel,audio,video,input,storage,lp,sys,network,users,rfkill "$USERNAME_VAL"
     # Login password = encryption passphrase (install.sh's password-sync code does
     # the same thing on first run; we set it here so the user can log in immediately
     # after reboot in case install.sh password-sync is skipped via OMARCHY_CHROOT_INSTALL).
