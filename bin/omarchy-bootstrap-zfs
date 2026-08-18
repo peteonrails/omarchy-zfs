@@ -865,8 +865,20 @@ EOF
   say "Removing the stale snapper config (omarchy-zfs-snapper-guard)"
   run arch-chroot "$MNT" omarchy-zfs-snapper-guard
 
+  # The ISO ships a Node.js tarball at /opt/packages for offline mise
+  # installs; provision-user expects it at the same path inside the target.
+  if [[ -d /opt/packages ]] && ! (( DRY_RUN )); then
+    mkdir -p "$MNT/opt/packages"
+    cp -n /opt/packages/* "$MNT/opt/packages/" 2>/dev/null || true
+  fi
+
   say "Provisioning user $USERNAME_VAL (omarchy-provision-user)"
   run arch-chroot "$MNT" sudo -u "$USERNAME_VAL" omarchy-provision-user --first-install
+
+  # The tarball is install-time plumbing, not part of the installed system.
+  if ! (( DRY_RUN )); then
+    rm -rf "$MNT/opt/packages"
+  fi
 }
 
 # ============================================================================
