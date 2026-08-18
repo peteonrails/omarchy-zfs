@@ -105,9 +105,13 @@ import sys
 path = sys.argv[1]
 text = open(path).read()
 anchor = "if /usr/local/bin/omarchy-cidata-load; then"
-zfs_offer = """# omarchy-zfs: offer the root-on-ZFS + ZFSBootMenu install path. Defaults to
-# "No" after 15s so unattended (cidata) installs run the stock path untouched.
-if gum confirm --timeout 15s --default=false "Install with root-on-ZFS + ZFSBootMenu (experimental)?"; then
+zfs_offer = """# omarchy-zfs: offer the root-on-ZFS + ZFSBootMenu install path. Unattended
+# media always carry a cidata drive, so skip the offer instantly for them;
+# an interactive boot has a human and waits for an answer (a 15s timeout
+# cost a real user their choice in validation).
+if lsblk -no LABEL 2>/dev/null | grep -qx cidata; then
+  : # autoinstall drive present — stock unattended flow untouched
+elif gum confirm --default=false "Install with root-on-ZFS + ZFSBootMenu (experimental)?"; then
   exec /usr/local/bin/omarchy-zfs-install
 fi
 
