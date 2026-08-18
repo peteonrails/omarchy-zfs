@@ -553,6 +553,18 @@ stage_pacstrap() {
     # ISO's [zfs-offline] mirror) tracks them. The omarchy-zfs kernel guard
     # prevents future skew.
     pkgs+=(linux linux-headers zfs-dkms-git zfs-utils-git omarchy omarchy-zfs)
+
+    # The full Omarchy manifest, not just the meta-package's dependency
+    # closure: things like docker live only in the package lists, and
+    # omarchy-apply-system assumes they're installed (its docker.sh died on
+    # the missing docker group in the first ISO VM run). The stock installer
+    # pacstraps these same lists; the ISO bakes them into the live env.
+    local list
+    for list in /usr/share/omarchy-iso/omarchy-base.packages \
+                /usr/share/omarchy-iso/omarchy-other.packages; do
+      [[ -r $list ]] || continue
+      mapfile -t -O "${#pkgs[@]}" pkgs < <(grep -hvE '^#|^\s*$' "$list")
+    done
     say "pacstrap full Omarchy + ZFS layer from the ISO's offline mirrors (zfs-dkms builds once, in-chroot)"
   else
     # archzfs LTS live ISO: prebuilt modules, atomically paired by archzfs.
