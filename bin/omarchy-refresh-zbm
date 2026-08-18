@@ -8,7 +8,7 @@
 omarchy-zfs-kernel-compat-check installed || exit 1
 
 echo "Rebuilding initramfs"
-sudo mkinitcpio -P
+sudo "$(command -v /usr/bin/mkinitcpio || echo mkinitcpio)" -P
 
 if command -v generate-zbm &>/dev/null; then
   echo "Regenerating ZFSBootMenu"

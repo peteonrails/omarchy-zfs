@@ -44,7 +44,7 @@ pin_and_build() {
       printf '\n[options]\nIgnorePkg = %s %s-headers\n' "$FLAVOR" "$FLAVOR" >>/etc/pacman.conf
   fi
   echo ":: rebuilding initramfs + ZBM"
-  if command -v omarchy-refresh-zbm &>/dev/null; then omarchy-refresh-zbm; else mkinitcpio -P; fi
+  if command -v omarchy-refresh-zbm &>/dev/null; then omarchy-refresh-zbm; else "$(command -v /usr/bin/mkinitcpio || echo mkinitcpio)" -P; fi
 }
 
 # --- 1. repo candidate ----------------------------------------------------------

@@ -198,7 +198,7 @@ else
     }
   fi
   echo "Regenerating initramfs"
-  mkinitcpio -P
+  "$(command -v /usr/bin/mkinitcpio || echo mkinitcpio)" -P
   if command -v generate-zbm &>/dev/null; then
     echo "Regenerating ZFSBootMenu"
     generate-zbm

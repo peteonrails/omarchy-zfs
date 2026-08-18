@@ -90,7 +90,7 @@ sudo rm "$MKINITCPIO_CONF"
 
 echo "Regenerating initramfs..."
 if omarchy-fs-zfs; then
-  sudo mkinitcpio -P
+  sudo "$(command -v /usr/bin/mkinitcpio || echo mkinitcpio)" -P
   if command -v generate-zbm &>/dev/null; then
     sudo generate-zbm
   fi

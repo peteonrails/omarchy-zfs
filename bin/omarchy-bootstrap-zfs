@@ -1015,7 +1015,7 @@ EOF
   run arch-chroot "$MNT" omarchy-zfs-ensure-mkinitcpio
 
   say "Building all initramfs presets (mkinitcpio -P)"
-  run arch-chroot "$MNT" mkinitcpio -P
+  run arch-chroot "$MNT" /usr/bin/mkinitcpio -P
 }
 
 # ============================================================================
