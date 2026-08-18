@@ -524,6 +524,24 @@ stage_mount_filesystems() {
 
   run mkdir -p "$ESP_MOUNT"
   run mount "$ESP_DEVICE" "$ESP_MOUNT"
+
+  # Every dataset with a real mountpoint MUST be mounted before anything
+  # writes to those paths: files written while a dataset is unmounted land in
+  # the parent (usually ROOT) and vanish under the mount at boot. That is how
+  # the pool key and the user's entire home directory got shadowed in VM
+  # validation — an install that looked perfect and then couldn't log in.
+  if ! (( DRY_RUN )); then
+    local ds mp missing=()
+    while read -r ds mp; do
+      [[ $mp == none || $mp == legacy || $mp == "-" ]] && continue
+      findmnt -n "$mp" >/dev/null || missing+=("$ds -> $mp")
+    done < <(zfs list -H -r -o name,mountpoint "$POOL_NAME")
+    if (( ${#missing[@]} )); then
+      printf '  %s\n' "${missing[@]}" >&2
+      die "Datasets above are not mounted; refusing to continue (writes would be shadowed at boot)"
+    fi
+    say "All datasets mounted"
+  fi
 }
 
 # ============================================================================
