@@ -381,8 +381,11 @@ stage_create_pool() {
   if (( DRY_RUN )); then
     log "would write keyfile $KEYFILE_TMP"
   else
-    umask 077
-    printf '%s' "$pass1" > "$KEYFILE_TMP"
+    # Subshell: the umask must cover ONLY the keyfile. Leaked process-wide it
+    # tightened every later mkdir/cp to 700/600 — provision-user (running as
+    # the target user) couldn't traverse /opt/packages and the Node install
+    # failed (second VM run).
+    ( umask 077; printf '%s' "$pass1" > "$KEYFILE_TMP" )
   fi
 
   local vdev_spec
@@ -760,7 +763,10 @@ Components:
 EFI:
   Enabled: true
   ImageDir: /boot/efi/EFI/zbm
-  Versions: 2
+  # false = stable filenames (vmlinuz.EFI + vmlinuz-backup.EFI). Versioned
+  # names (Versions: N) would orphan the EFI boot entry, which points at
+  # \EFI\zbm\vmlinuz.EFI — observed in the second VM run.
+  Versions: false
 Kernel:
   CommandLine: quiet loglevel=0 zbm.skip_hooks=
 EOF
@@ -891,8 +897,9 @@ EOF
   # The ISO ships a Node.js tarball at /opt/packages for offline mise
   # installs; provision-user expects it at the same path inside the target.
   if [[ -d /opt/packages ]] && ! (( DRY_RUN )); then
-    mkdir -p "$MNT/opt/packages"
-    cp -n /opt/packages/* "$MNT/opt/packages/" 2>/dev/null || true
+    # Explicit modes: the target user must be able to read these.
+    install -d -m755 "$MNT/opt/packages"
+    install -m644 -t "$MNT/opt/packages" /opt/packages/* 2>/dev/null || true
   fi
 
   say "Provisioning user $USERNAME_VAL (omarchy-provision-user)"
