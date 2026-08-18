@@ -76,6 +76,10 @@ package() {
   done
 
   # --- systemd units -> /usr/lib/systemd/system ---
+  # Make journald wait for the /var/log dataset, or the system logs nowhere.
+  install -Dm644 "$S/systemd/systemd-journal-flush.service.d/zfs-var-log.conf" \
+    "$pkgdir/usr/lib/systemd/system/systemd-journal-flush.service.d/zfs-var-log.conf"
+
   install -Dm644 "$S/systemd/omarchy-zfs-scrub.service" "$pkgdir/usr/lib/systemd/system/omarchy-zfs-scrub.service"
   install -Dm644 "$S/systemd/omarchy-zfs-scrub.timer"   "$pkgdir/usr/lib/systemd/system/omarchy-zfs-scrub.timer"
 
