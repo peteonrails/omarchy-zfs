@@ -564,7 +564,27 @@ stage_mount_filesystems() {
     # With altroot (-R "$MNT"), the mountpoint property ALREADY reports the
     # altroot-prefixed path (/mnt/home), so compare it as-is. Prefixing $MNT
     # again produced /mnt/mnt/home and made this gate fail every install.
-    local ds mp missing=()
+    # Retry each unmounted dataset individually and KEEP the error: a silent
+    # `zfs mount ... 2>/dev/null || true` is how this failure hid for hours.
+    # The usual cause is a non-empty mountpoint directory, which ZFS refuses
+    # to mount over — and whose contents are exactly the writes that would be
+    # shadowed later.
+    local ds mp err
+    while read -r ds mp; do
+      [[ $mp == none || $mp == legacy || $mp == "-" ]] && continue
+      mountpoint -q "$mp" && continue
+      if ! err=$(zfs mount "$ds" 2>&1); then
+        warn "zfs mount $ds failed: $err"
+        if [[ $err == *"not empty"* && -d $mp ]]; then
+          warn "moving pre-existing contents of $mp aside so the dataset can mount"
+          run mkdir -p "$MNT/var/tmp/omarchy-zfs-preexisting"
+          ( shopt -s dotglob; mv "$mp"/* "$MNT/var/tmp/omarchy-zfs-preexisting/" 2>/dev/null ) || true
+          err=$(zfs mount "$ds" 2>&1) || warn "still cannot mount $ds: $err"
+        fi
+      fi
+    done < <(zfs list -H -r -o name,mountpoint "$POOL_NAME")
+
+    local missing=()
     while read -r ds mp; do
       [[ $mp == none || $mp == legacy || $mp == "-" ]] && continue
       # mountpoint -q, NOT findmnt: findmnt <path> reports the nearest
