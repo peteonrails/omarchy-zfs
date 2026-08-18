@@ -1,0 +1,24 @@
+# omarchy-zfs: guarantee a plain kernel + initramfs pair in /boot.
+#
+# ZFSBootMenu boots a BE by kexec'ing /boot/vmlinuz-* with its matching
+# /boot/initramfs-*.img from the pool. Omarchy's limine flow builds only a
+# UKI on the ESP — the initramfs goes into a temp dir and never lands in
+# /boot, so ZBM kexecs the kernel with no initrd and the boot dies with
+# "VFS: Unable to mount root fs on unknown-block(0,0)".
+#
+# Preset files are sourced as bash: pick whichever supported kernel is
+# installed. On systems that also keep the stock preset this rebuilds the
+# same image path — harmless.
+
+ALL_config="/etc/mkinitcpio.conf"
+PRESETS=()
+
+for _k in linux linux-lts; do
+  if [[ -e /boot/vmlinuz-${_k} ]]; then
+    ALL_kver="/boot/vmlinuz-${_k}"
+    default_image="/boot/initramfs-${_k}.img"
+    PRESETS=('default')
+    break
+  fi
+done
+unset _k

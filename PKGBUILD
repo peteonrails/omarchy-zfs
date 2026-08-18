@@ -1,6 +1,6 @@
 # Maintainer: Pete Jackson <pete@tern.travel>
 pkgname=omarchy-zfs
-pkgver=1.0.1
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="Root-on-ZFS + ZFSBootMenu support layer for Omarchy (Quattro)"
 arch=('any')
@@ -87,6 +87,10 @@ package() {
   # --- default config -> /etc/omarchy-zfs ---
   install -Dm644 "$S/config/autosnap.conf" "$pkgdir/etc/omarchy-zfs/autosnap.conf"
   install -Dm644 "$S/config/bootorder.conf" "$pkgdir/etc/omarchy-zfs/bootorder.conf"
+
+  # ZBM boots kernel+initramfs pairs from /boot; omarchy's limine flow only
+  # builds a UKI on the ESP. This preset keeps the plain pair existing.
+  install -Dm644 "$S/mkinitcpio/linux-zbm.preset" "$pkgdir/etc/mkinitcpio.d/linux-zbm.preset"
 
   install -Dm644 "$S/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
