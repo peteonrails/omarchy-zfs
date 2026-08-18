@@ -45,28 +45,31 @@ fi
 STOCK="$CONFD/omarchy_hooks.conf"
 OURS="$CONFD/zz-omarchy-zfs.conf"
 
-# Derive the effective HOOKS= line. Prefer omarchy's drop-in; fall back to
-# the base mkinitcpio.conf if the drop-in isn't present (fresh/edge cases).
-hooks_line=""
-for src in "$STOCK" "$MAIN"; do
-  if [[ -r "$src" ]]; then
-    line="$(grep -E '^[[:space:]]*HOOKS=' "$src" | tail -1 || true)"
-    if [[ -n "$line" ]]; then
-      hooks_line="$line"
-      break
-    fi
-  fi
-done
+# Derive the EFFECTIVE hooks by evaluating the config chain exactly the way
+# mkinitcpio does: main conf, then conf.d drop-ins in sort order, skipping our
+# own. Never text-scrape a HOOKS= line: omarchy_hooks.conf contains a second,
+# conditional `HOOKS=("${_omarchy_hooks[@]}")` reassignment (its NVIDIA kms
+# filter), and grabbing that line verbatim produced HOOKS=(zfs) — an
+# initramfs with no /init and an unbootable install (ISO VM validation,
+# 2026-08-18).
+mapfile -t hooks < <(
+  bash --norc --noprofile -c '
+    set +e
+    HOOKS=()
+    [[ -r "$1" ]] && source "$1" &>/dev/null
+    for f in "$2"/*.conf; do
+      [[ -e "$f" ]] || continue
+      [[ "$(basename "$f")" == zz-omarchy-zfs.conf ]] && continue
+      source "$f" &>/dev/null
+    done
+    printf "%s\n" "${HOOKS[@]}"
+  ' _ "$MAIN" "$CONFD"
+)
 
-if [[ -z "$hooks_line" ]]; then
-  echo "omarchy-zfs-ensure-mkinitcpio: no HOOKS= line found, leaving a sane default" >&2
-  hooks_line='HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block filesystems fsck)'
+if (( ${#hooks[@]} == 0 )); then
+  echo "omarchy-zfs-ensure-mkinitcpio: could not derive HOOKS, using a sane default" >&2
+  hooks=(base udev autodetect microcode modconf kms keyboard keymap consolefont block filesystems fsck)
 fi
-
-# Extract the parenthesized hook tokens into an array.
-inner="${hooks_line#*\(}"
-inner="${inner%\)*}"
-read -r -a hooks <<< "$inner"
 
 # Canonicalize the hook list unconditionally: drop every existing zfs (so we
 # never leave a duplicate), then insert a single zfs right before filesystems
@@ -83,6 +86,16 @@ for h in "${hooks[@]}"; do
   new_hooks+=("$h")
 done
 (( inserted == 0 )) && new_hooks+=("zfs")
+
+# An initramfs without an init system has no /init and cannot boot. Refuse
+# to write a hook list that lacks one, whatever the derivation said.
+case " ${new_hooks[*]} " in
+  *" base "* | *" systemd "*) ;;
+  *)
+    echo "omarchy-zfs-ensure-mkinitcpio: derived hook list looks broken (${new_hooks[*]}); using a sane default" >&2
+    new_hooks=(base udev autodetect microcode modconf kms keyboard keymap consolefont block zfs filesystems fsck)
+    ;;
+esac
 
 new_line="HOOKS=(${new_hooks[*]})"
 
