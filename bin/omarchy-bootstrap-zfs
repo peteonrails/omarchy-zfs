@@ -260,10 +260,31 @@ stage_disk_selection() {
     raidz3) min=5 ;;
   esac
 
-  say "Pick ${min}+ disks (Tab to multi-select; first disk also gets the ESP)"
-  local choices
-  choices=$(lsblk -dpno NAME,SIZE,MODEL,TYPE | awk '$NF=="disk"' \
-    | gum choose --no-limit --header "Disks (≥${min})")
+  local disk_rows
+  disk_rows=$(lsblk -dpno NAME,SIZE,MODEL,TYPE | awk '$NF=="disk"')
+  if [[ -z $disk_rows ]]; then
+    lsblk -dpno NAME,SIZE,TYPE >&2
+    die "No whole disks found (need lsblk TYPE=disk; see device list above)"
+  fi
+
+  local choices=""
+  if (( min == 1 )); then
+    # Single topology: a plain picker, where Enter means "this one". The
+    # multi-select UI made Enter submit an EMPTY selection unless the disk
+    # was first marked with Space — the natural keystroke trap that killed
+    # the first ISO VM run.
+    say "Pick the disk (it also gets the ESP)"
+    choices=$(echo "$disk_rows" | gum choose --header "Disk")
+  else
+    say "Pick ${min}+ disks (Space to mark, Enter to confirm; first disk also gets the ESP)"
+    local attempt
+    for attempt in 1 2 3; do
+      choices=$(echo "$disk_rows" \
+        | gum choose --no-limit --header "Disks (mark ≥${min} with Space, then Enter)")
+      [[ -n $choices ]] && break
+      warn "Nothing selected — mark disks with Space, then press Enter"
+    done
+  fi
   [[ -n $choices ]] || die "No disks selected"
 
   mapfile -t TARGET_DISKS < <(echo "$choices" | awk '{print $1}')
