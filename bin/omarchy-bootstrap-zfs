@@ -762,15 +762,20 @@ EOF
       die "$DATASET_KEYSTORE is not mounted at $MNT/etc/zfs/keys; refusing to write the key where it would be shadowed"
     install -Dm600 "$KEYFILE_TMP" "$MNT$KEYFILE_FINAL"
 
-    # Tell ZFSBootMenu where the key material lives so it can inject the key
-    # into the initramfs it kexecs — otherwise the key file, living inside the
-    # encrypted pool, is unreachable at initramfs time and the user gets a
-    # second (hidden) passphrase prompt.
+    # keylocation stays `prompt` for the ROOT pool, deliberately.
+    #
+    # Pointing it at a keyfile that lives INSIDE the encrypted pool is a
+    # chicken-and-egg: the initramfs cannot read it before the pool is
+    # unlocked, so it fell back to a prompt whose input path did not work —
+    # a correct passphrase came back "Incorrect key provided" while the very
+    # same passphrase unlocked the pool fine from a live system. Two working
+    # prompts beat one broken one.
+    #
+    # The key file still lives in the keystore dataset: it is what unlocks
+    # child datasets and secondary pools once the root is up, and it is the
+    # material ZFSBootMenu can inject via keysource once that path is proven.
+    run zfs set keylocation=prompt "$POOL_NAME"
     run zfs set "org.zfsbootmenu:keysource=$DATASET_KEYSTORE" "$POOL_NAME"
-    # Run change-key inside the chroot so the file:// path resolves correctly.
-    # The kernel ZFS state is shared between live ISO and chroot, so this
-    # updates the same imported pool either way.
-    arch-chroot "$MNT" zfs change-key -o "keylocation=file://$KEYFILE_FINAL" "$POOL_NAME"
   fi
 
   # pacstrap never runs systemd's presets, so zfs-utils' units land disabled:
