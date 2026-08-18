@@ -629,7 +629,10 @@ stage_fstab() {
   # zfs-mount-generator (driven by zfs-zed + the cachefile) handles them at
   # boot, and double-mount conflicts are easy to introduce by mixing fstab
   # entries with zfs-mount-generator-managed mounts.
-  genfstab -U "$MNT" | grep -v ' zfs ' >> "$MNT/etc/fstab"
+  # genfstab separates fields with TABS, so a space-delimited filter never
+  # matched and the ZFS root landed in fstab anyway (found in VM autopsy).
+  # Match the fstype field whatever the whitespace.
+  genfstab -U "$MNT" | grep -vP '^\S+\s+\S+\s+zfs\s' >> "$MNT/etc/fstab"
 }
 
 # ============================================================================
