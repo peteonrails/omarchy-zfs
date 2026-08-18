@@ -536,16 +536,13 @@ stage_mount_filesystems() {
   # the pool key and the user's entire home directory got shadowed in VM
   # validation — an install that looked perfect and then couldn't log in.
   if ! (( DRY_RUN )); then
-    # The pool is imported with altroot -R "$MNT", so a dataset whose
-    # mountpoint property says /home is actually mounted at $MNT/home.
-    # Checking the property path matched unrelated mounts on the live ISO and
-    # passed vacuously — /mnt/home was NOT mounted, useradd -m wrote the home
-    # into the ROOT dataset, and the greeter then died on chdir(/home/pete).
+    # With altroot (-R "$MNT"), the mountpoint property ALREADY reports the
+    # altroot-prefixed path (/mnt/home), so compare it as-is. Prefixing $MNT
+    # again produced /mnt/mnt/home and made this gate fail every install.
     local ds mp missing=()
     while read -r ds mp; do
       [[ $mp == none || $mp == legacy || $mp == "-" ]] && continue
-      findmnt -n "$MNT${mp#/}" >/dev/null 2>&1 || findmnt -n "$MNT$mp" >/dev/null 2>&1 ||
-        missing+=("$ds -> $MNT$mp")
+      findmnt -n "$mp" >/dev/null 2>&1 || missing+=("$ds -> $mp")
     done < <(zfs list -H -r -o name,mountpoint "$POOL_NAME")
     if (( ${#missing[@]} )); then
       printf '  %s\n' "${missing[@]}" >&2
