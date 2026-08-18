@@ -567,7 +567,11 @@ stage_mount_filesystems() {
     local ds mp missing=()
     while read -r ds mp; do
       [[ $mp == none || $mp == legacy || $mp == "-" ]] && continue
-      findmnt -n "$mp" >/dev/null 2>&1 || missing+=("$ds -> $mp")
+      # mountpoint -q, NOT findmnt: findmnt <path> reports the nearest
+      # ENCLOSING mount, so it answers "mounted" for a plain directory inside
+      # an already-mounted filesystem. That false pass is why every
+      # shadowed-write bug today slipped past these gates.
+      mountpoint -q "$mp" || missing+=("$ds -> $mp")
     done < <(zfs list -H -r -o name,mountpoint "$POOL_NAME")
     if (( ${#missing[@]} )); then
       printf '  %s\n' "${missing[@]}" >&2
@@ -758,7 +762,7 @@ EOF
     # lands in the ROOT dataset and vanishes under the mount at first boot —
     # authentication then succeeds and the session dies on chdir().
     zfs mount "$DATASET_HOME" 2>/dev/null || true
-    findmnt -n "$MNT/home" >/dev/null 2>&1 ||
+    mountpoint -q "$MNT/home" ||
       die "$DATASET_HOME is not mounted at $MNT/home; refusing to create a home that would be shadowed at boot"
 
     # Idempotent for --resume re-runs of this stage.
@@ -796,7 +800,7 @@ EOF
     # Written into the ROOT dataset (see KEYFILE_FINAL) so no later mount can
     # shadow it, and so it is readable the instant the root is mounted.
     install -Dm600 "$KEYFILE_TMP" "$MNT$KEYFILE_FINAL"
-    findmnt -n "$MNT/etc/zfs" >/dev/null &&
+    mountpoint -q "$MNT/etc/zfs" &&
       die "something is mounted at $MNT/etc/zfs — the pool key would be shadowed at boot"
 
     # Point the pool at the keystore file and embed that file in the in-pool
