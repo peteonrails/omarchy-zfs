@@ -61,6 +61,7 @@ readonly KEYFILE_TMP="/tmp/omarchy-bootstrap.key"
 readonly KEYFILE_FINAL="/etc/zfs/keys/${POOL_NAME}.key"
 
 readonly STATE_FILE="/tmp/omarchy-bootstrap-zfs.state"
+readonly VARS_FILE="/tmp/omarchy-bootstrap-zfs.vars"
 readonly LOG_FILE="/tmp/omarchy-bootstrap-zfs.log"
 
 # Latest stable release EFI, served via redirect by the ZBM project.
@@ -122,7 +123,24 @@ confirm() {
   gum confirm "$prompt"
 }
 
-mark_done() { echo "$1" >> "$STATE_FILE"; }
+# Stage results (chosen disks, partition paths, username, …) live in shell
+# globals, so `--resume` in a fresh process would skip the stages that set
+# them and run later stages against empty values — the second VM run's
+# partition stage no-op'd exactly this way. Persist the globals alongside
+# the stage list and reload them on resume.
+save_vars() {
+  declare -p POOL_TOPOLOGY TARGET_DISKS ESP_DEVICE ZFS_PARTITIONS \
+    USE_EXISTING_POOL HOSTNAME_VAL TIMEZONE_VAL LOCALE_VAL USERNAME_VAL \
+    > "$VARS_FILE"
+}
+
+load_vars() {
+  # declare -p emits function-local declares when sourced inside a function;
+  # force globals.
+  [[ -f $VARS_FILE ]] && source <(sed 's/^declare /declare -g /' "$VARS_FILE")
+}
+
+mark_done() { echo "$1" >> "$STATE_FILE"; save_vars; }
 is_done()   { [[ -f $STATE_FILE ]] && grep -qFx "$1" "$STATE_FILE"; }
 
 stage() {
@@ -853,7 +871,12 @@ EOF
 main() {
   parse_args "$@"
   : > "$LOG_FILE"
-  (( RESUME )) || : > "$STATE_FILE"
+  if (( RESUME )); then
+    load_vars
+  else
+    : > "$STATE_FILE"
+    rm -f "$VARS_FILE"
+  fi
 
   stage preflight
   stage install_zfs_on_iso
