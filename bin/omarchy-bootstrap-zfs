@@ -773,6 +773,16 @@ EOF
     arch-chroot "$MNT" zfs change-key -o "keylocation=file://$KEYFILE_FINAL" "$POOL_NAME"
   fi
 
+  # pacstrap never runs systemd's presets, so zfs-utils' units land disabled:
+  # the initramfs mounts the root dataset and NOTHING else ever mounts —
+  # no /home (the greeter authenticates, then fails to open a session and
+  # looks like a rejected password), no /var/log, no keystore. Enable the
+  # full set explicitly.
+  say "Enabling ZFS services in the target"
+  run arch-chroot "$MNT" systemctl enable \
+    zfs-import-cache.service zfs-mount.service zfs-zed.service \
+    zfs-import.target zfs.target
+
   say "Setting zpool cachefile"
   run zpool set "cachefile=/etc/zfs/zpool.cache" "$POOL_NAME"
   if ! (( DRY_RUN )); then
