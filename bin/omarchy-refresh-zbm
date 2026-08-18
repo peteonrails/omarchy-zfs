@@ -26,7 +26,10 @@ keyfile=$(zpool list -H -o name 2>/dev/null | while read -r p; do
 if [[ -n $keyfile && -r $keyfile ]] && command -v findmnt &>/dev/null; then
   esp=$(findmnt -n -o TARGET -t vfat | head -1)
   if [[ -n $esp ]]; then
-    leaked=$(sudo grep -rlF "$(sudo cat "$keyfile")" "$esp" 2>/dev/null | head -3)
+    # Match the embedded PATH (cpio archives store member names verbatim),
+    # never the key bytes: a short passphrase occurs by chance inside
+    # unrelated EFI binaries and flagged limine as a leak.
+    leaked=$(sudo grep -rlF "${keyfile#/}" "$esp" 2>/dev/null | head -3)
     if [[ -n $leaked ]]; then
       echo "omarchy-refresh-zbm: SECURITY — the pool key appears on the unencrypted ESP:" >&2
       printf '  %s\n' $leaked >&2
