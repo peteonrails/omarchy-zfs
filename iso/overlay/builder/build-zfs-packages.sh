@@ -69,6 +69,13 @@ for aur_pkg in perl-config-inifiles sanoid zfs-utils-git zfs-dkms-git perl-boole
   build_one "$aur_pkg" "$build_work/$aur_pkg-aur"
 done
 
+# Purge previous builds of these packages from the persistent mirror cache
+# first: the -git pair hard-pins exact pkgvers (zfs-dkms-git requires
+# zfs-utils-git=<same rev>), so a stale copy from an earlier run poisons
+# dependency resolution. Same pattern as upstream build-omarchy-packages.sh.
+for stale in omarchy-zfs perl-config-inifiles sanoid zfs-utils-git zfs-dkms-git perl-boolean zfsbootmenu; do
+  rm -f "$zfs_repo_dir/$stale"-[0-9]*.pkg.tar.* "$zfs_repo_dir/$stale"-[0-9]*.pkg.tar.*.sig
+done
 cp "$build_work"/*.pkg.tar.* "$zfs_repo_dir/"
 
 echo ">>> [zfs] downloading target-side ZFS stack into the zfs mirror"
