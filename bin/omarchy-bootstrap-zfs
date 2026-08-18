@@ -1018,7 +1018,11 @@ EOF
   # build every preset explicitly rather than trusting they fired.
   # Generate the standalone ZBM config (effective hooks + embedded pool key)
   # before building, so the in-pool image can unlock without a prompt.
-  run arch-chroot "$MNT" omarchy-zfs-ensure-mkinitcpio
+  # Pass the root dataset explicitly: inside arch-chroot, `findmnt /` still
+  # reports the LIVE ISO's root (a chroot is not a mount namespace), so the
+  # script could not identify this pool and skipped embedding the key.
+  run arch-chroot "$MNT" env OMARCHY_ZFS_ROOT_DS="$DATASET_ROOT" \
+    omarchy-zfs-ensure-mkinitcpio
 
   say "Building all initramfs presets (mkinitcpio -P)"
   run arch-chroot "$MNT" /usr/bin/mkinitcpio -P
