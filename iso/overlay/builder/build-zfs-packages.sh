@@ -75,6 +75,11 @@ done
 # dependency resolution. Same pattern as upstream build-omarchy-packages.sh.
 for stale in omarchy-zfs perl-config-inifiles sanoid zfs-utils-git zfs-dkms-git perl-boolean zfsbootmenu; do
   rm -f "$zfs_repo_dir/$stale"-[0-9]*.pkg.tar.* "$zfs_repo_dir/$stale"-[0-9]*.pkg.tar.*.sig
+  # Also the pacman cache (bind-mounted from the host): a rebuild at the same
+  # git rev produces same-name different-bytes packages, and pacman then
+  # rejects the stale cached copy against the new db checksum ("invalid or
+  # corrupted package"), failing the airootfs install.
+  rm -f "/var/cache/pacman/pkg/$stale"-[0-9]*.pkg.tar.*
 done
 cp "$build_work"/*.pkg.tar.* "$zfs_repo_dir/"
 
