@@ -330,12 +330,23 @@ stage_partition_disks() {
   # trips over the existing pool, so a restart after any failure needs a
   # human to clean up. Do it here instead.
   if ! (( DRY_RUN )); then
+    # Unmount by DEVICE, not by path: a previous attempt can leave the ESP
+    # mounted anywhere, and mkfs.fat then refuses with "contains a mounted
+    # filesystem". Walk every partition of every target disk.
+    local d mp
+    for d in "${TARGET_DISKS[@]}"; do
+      while read -r mp; do
+        [[ -n $mp ]] || continue
+        warn "Unmounting stale $mp from a previous attempt"
+        umount -R "$mp" 2>/dev/null || umount -lR "$mp" 2>/dev/null || true
+      done < <(lsblk -nro MOUNTPOINTS "$d" 2>/dev/null | grep -v '^$' | sort -ru)
+    done
     umount -R "$ESP_MOUNT" 2>/dev/null || true
     umount -R "$MNT" 2>/dev/null || true
     if zpool list -H -o name 2>/dev/null | grep -qx "$POOL_NAME"; then
       warn "Exporting a previously imported $POOL_NAME before repartitioning"
       zfs unmount -a 2>/dev/null || true
-      zpool export "$POOL_NAME" 2>/dev/null || true
+      zpool export -f "$POOL_NAME" 2>/dev/null || true
     fi
   fi
 
