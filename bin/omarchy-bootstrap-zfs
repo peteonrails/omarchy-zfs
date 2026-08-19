@@ -1029,6 +1029,22 @@ EOF
     install -m644 -t "$MNT/opt/packages" /opt/packages/* 2>/dev/null || true
   fi
 
+  # Omarchy's SDDM theme is password-only: it authenticates whatever user the
+  # greeter has "last selected", and with no state file that is the empty
+  # string — PAM then reports "user unknown" and every correct password looks
+  # wrong. The stock ISO orchestrator leaves this record behind; our install
+  # path has to write it itself.
+  if ! (( DRY_RUN )); then
+    local sess=/usr/share/wayland-sessions/hyprland.desktop
+    [[ -e "$MNT/usr/local/share/wayland-sessions/omarchy.desktop" ]] &&
+      sess=/usr/local/share/wayland-sessions/omarchy.desktop
+    install -d -m755 "$MNT/var/lib/sddm"
+    printf '[Last]\nUser=%s\nSession=%s\n' "$USERNAME_VAL" "$sess" \
+      > "$MNT/var/lib/sddm/state.conf"
+    arch-chroot "$MNT" chown -R sddm:sddm /var/lib/sddm 2>/dev/null || true
+    say "SDDM last-user set to $USERNAME_VAL ($(basename "$sess"))"
+  fi
+
   say "Provisioning user $USERNAME_VAL (omarchy-provision-user)"
   run arch-chroot "$MNT" sudo -u "$USERNAME_VAL" omarchy-provision-user --first-install
 
