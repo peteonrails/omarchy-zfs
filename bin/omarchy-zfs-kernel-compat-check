@@ -17,11 +17,27 @@ set -e
 mode="${1:-installed}"
 
 # Non-ZFS systems are never blocked by this check.
-if ! command -v omarchy-fs-zfs &>/dev/null || ! omarchy-fs-zfs 2>/dev/null; then
-  # Fallback for the hook context where omarchy-fs-zfs may not be on PATH:
-  fs=$(findmnt -no FSTYPE / 2>/dev/null || true)
-  [[ $fs == zfs ]] || exit 0
-fi
+#
+# "Uses ZFS" is deliberately broader than "boots from ZFS". A machine with a
+# btrfs root and ZFS on /home (or on a data pool) is just as dependent on
+# zfs.ko building for the running kernel: without it the pool cannot import at
+# boot, and a missing /home means the greeter authenticates you and then fails
+# to open a session — indistinguishable from a wrong password. Gating this
+# check on the root filesystem alone left exactly that hole.
+zfs_in_use() {
+  [[ "$(findmnt -no FSTYPE / 2>/dev/null || true)" == "zfs" ]] && return 0
+  # Any imported pool. (Covers /home-only and secondary data pools.)
+  [[ -n "$(zpool list -H -o name 2>/dev/null)" ]] && return 0
+  # A DKMS zfs package installed means the user intends ZFS to work on this
+  # kernel, even if no pool happens to be imported right now — which is
+  # precisely the state a broken build leaves behind.
+  local p
+  for p in zfs-dkms zfs-dkms-git; do
+    pacman -Qq "$p" &>/dev/null && return 0
+  done
+  return 1
+}
+zfs_in_use || exit 0
 
 if [[ -n ${OMARCHY_SKIP_ZFS_KERNEL_CHECK:-} ]]; then
   echo "omarchy-zfs-kernel-compat-check: SKIPPED (OMARCHY_SKIP_ZFS_KERNEL_CHECK set)" >&2
