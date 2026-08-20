@@ -1,0 +1,86 @@
+#!/bin/bash
+
+# omarchy:summary=Rebuild the in-pool initramfs with the pool keyfile embedded.
+# omarchy:requires-sudo=true
+#
+# ZFSBootMenu unlocks the pool to read /boot, then kexecs the kernel and
+# initramfs it finds there — and that initramfs has to unlock the pool all over
+# again. Embedding the keyfile lets it do so silently: one passphrase prompt
+# (ZBM's) instead of two.
+#
+# Why this is a separate, explicit step:
+#
+# The keyed image and the stock image are the SAME FILE
+# (/boot/initramfs-<kernel>.img). We used to produce the keyed one from
+# /etc/mkinitcpio.d/linux-zbm.preset and rely on it being processed after the
+# stock linux.preset, since `mkinitcpio -P` walks /etc/mkinitcpio.d/*.preset in
+# glob order. That order is LOCALE-DEPENDENT: under en_US collation '.' sorts
+# before '-' so linux.preset runs first and the keyed image wins, but under C
+# collation (which is what arch-chroot and pacman hooks actually run with)
+# '-' < '.', so linux-zbm.preset runs FIRST and the keyless stock build
+# overwrites it. The install then boots and asks for the passphrase twice.
+#
+# So the key is no longer embedded by preset ordering. Callers run
+# `mkinitcpio -P` first and then this script, which rebuilds the image with
+# `mkinitcpio -c` (a standalone config — it deliberately ignores conf.d) and
+# verifies the key actually landed. Deterministic, and independent of locale.
+#
+# The keyfile may ONLY live in the image inside the encrypted pool. Omarchy's
+# limine flow builds a UKI onto the UNENCRYPTED ESP from the stock config, and
+# our libalpm hook sorts last (zz-) so that UKI is always built before this
+# runs. omarchy-refresh-zbm re-checks that the key never reached the ESP.
+#
+# Invoked by:
+#   - omarchy-refresh-zbm (after mkinitcpio -P)
+#   - omarchy-bootstrap-zfs stage 15, inside the target chroot
+
+set -euo pipefail
+
+ZBMCONF="${OMARCHY_ZFS_ZBM_CONF:-/etc/omarchy-zfs/mkinitcpio-zbm.conf}"
+MKINITCPIO="$(command -v /usr/bin/mkinitcpio || echo mkinitcpio)"
+
+if [[ ! -r $ZBMCONF ]]; then
+  echo "omarchy-zfs-embed-pool-key: no $ZBMCONF, nothing to embed" >&2
+  exit 0
+fi
+
+# No FILES+= line means omarchy-zfs-ensure-mkinitcpio found no keyfile to
+# embed (a prompt-unlocked pool, for instance). Rebuilding would just produce
+# the same image the stock preset already built, so leave it alone.
+keyfile=$(sed -n 's/^FILES+=(\(.*\))$/\1/p' "$ZBMCONF" | tail -1)
+if [[ -z $keyfile ]]; then
+  echo "omarchy-zfs-embed-pool-key: $ZBMCONF embeds no keyfile, skipping"
+  exit 0
+fi
+if [[ ! -r $keyfile ]]; then
+  echo "omarchy-zfs-embed-pool-key: keyfile $keyfile is not readable, skipping" >&2
+  exit 0
+fi
+
+rc=0
+built=0
+for k in linux linux-lts; do
+  kernel="/boot/vmlinuz-${k}"
+  image="/boot/initramfs-${k}.img"
+  [[ -e $kernel ]] || continue
+  built=1
+
+  echo "omarchy-zfs-embed-pool-key: rebuilding $image with $keyfile embedded"
+  if ! "$MKINITCPIO" -c "$ZBMCONF" -k "$kernel" -g "$image"; then
+    echo "omarchy-zfs-embed-pool-key: mkinitcpio failed for $k" >&2
+    rc=1
+    continue
+  fi
+
+  # Verify rather than assume: a silently keyless image is a second passphrase
+  # prompt at boot, and the whole point of this script is to prevent that.
+  if lsinitcpio -l "$image" 2>/dev/null | grep -qx "${keyfile#/}"; then
+    echo "omarchy-zfs-embed-pool-key: verified ${keyfile#/} present in $image"
+  else
+    echo "omarchy-zfs-embed-pool-key: ${keyfile#/} did NOT land in $image — boot will prompt twice" >&2
+    rc=1
+  fi
+done
+
+(( built )) || echo "omarchy-zfs-embed-pool-key: no supported kernel in /boot, nothing to do" >&2
+exit $rc

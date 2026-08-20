@@ -53,7 +53,7 @@ package() {
     omarchy-cmdline-add omarchy-refresh-zbm
     omarchy-zfs-snapshot omarchy-zfs-scrub omarchy-zfs-kernel-compat-check
     omarchy-zfs-autosnap omarchy-zfs-ensure-mkinitcpio omarchy-zfs-kernel-install
-    omarchy-zfs-snapper-guard omarchy-zfs-bootorder-guard
+    omarchy-zfs-snapper-guard omarchy-zfs-bootorder-guard omarchy-zfs-embed-pool-key
     omarchy-zfs-hibernation-setup omarchy-zfs-hibernation-remove omarchy-zfs-hibernation-available
     omarchy-bootstrap-zfs
   )

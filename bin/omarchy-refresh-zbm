@@ -10,6 +10,15 @@ omarchy-zfs-kernel-compat-check installed || exit 1
 echo "Rebuilding initramfs"
 sudo "$(command -v /usr/bin/mkinitcpio || echo mkinitcpio)" -P
 
+# -P has just rewritten /boot/initramfs-<kernel>.img from the stock config, so
+# re-embed the pool keyfile explicitly. This MUST come after -P: both configs
+# target the same image path, and leaving the winner to preset glob order made
+# it locale-dependent (C collation sorts linux-zbm.preset before linux.preset,
+# so the keyless image won and the install prompted for the passphrase twice).
+if command -v omarchy-zfs-embed-pool-key &>/dev/null; then
+  sudo omarchy-zfs-embed-pool-key || echo "omarchy-refresh-zbm: could not embed the pool key (boot will prompt twice)" >&2
+fi
+
 if command -v generate-zbm &>/dev/null; then
   echo "Regenerating ZFSBootMenu"
   sudo generate-zbm

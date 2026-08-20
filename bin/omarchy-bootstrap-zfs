@@ -1097,6 +1097,14 @@ EOF
 
   say "Building all initramfs presets (mkinitcpio -P)"
   run arch-chroot "$MNT" /usr/bin/mkinitcpio -P
+
+  # Then embed the pool key, explicitly and last. The keyed image and the stock
+  # image are the same file, and letting preset glob order decide the winner is
+  # locale-dependent: arch-chroot runs under C collation, where
+  # linux-zbm.preset sorts BEFORE linux.preset, so the keyless build landed
+  # last and the installed system asked for the passphrase a second time at
+  # boot (caught in VM validation of the 2026.08.20 ISO).
+  run arch-chroot "$MNT" omarchy-zfs-embed-pool-key
 }
 
 # ============================================================================
