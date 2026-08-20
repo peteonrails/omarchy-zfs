@@ -1,6 +1,6 @@
 # Maintainer: Pete Jackson <pete@tern.travel>
 pkgname=omarchy-zfs
-pkgver=1.1.0
+pkgver=1.2.0
 pkgrel=1
 pkgdesc="Root-on-ZFS + ZFSBootMenu support layer for Omarchy (Quattro)"
 arch=('any')
@@ -33,6 +33,13 @@ optdepends=(
   'lzop: faster syncoid stream compression'
   'mbuffer: syncoid network buffering'
   'pv: syncoid transfer progress'
+  # Remote unlock: only needed on headless/remote boxes, and only with a
+  # locally generated ZBM image. omarchy-zfs-remote-unlock-setup offers to
+  # install these when it needs them.
+  'dropbear: SSH access to the ZFSBootMenu prompt (omarchy-zfs-remote-unlock-setup)'
+  'mkinitcpio-nfs-utils: DHCP networking inside the ZBM image (remote unlock, --dhcp)'
+  'curl: fetch the pool key from a keyserver (omarchy-zfs-netkey-setup)'
+  'binutils: verify the contents of the generated ZBM EFI image'
 )
 # autosnap.conf is admin-editable; never clobber it on upgrade.
 backup=('etc/omarchy-zfs/autosnap.conf' 'etc/omarchy-zfs/bootorder.conf')
@@ -55,6 +62,8 @@ package() {
     omarchy-zfs-autosnap omarchy-zfs-ensure-mkinitcpio omarchy-zfs-kernel-install
     omarchy-zfs-snapper-guard omarchy-zfs-bootorder-guard
     omarchy-zfs-hibernation-setup omarchy-zfs-hibernation-remove omarchy-zfs-hibernation-available
+    omarchy-zfs-remote-unlock-setup omarchy-zfs-remote-unlock-remove
+    omarchy-zfs-netkey-setup omarchy-zfs-netkey-remove
     omarchy-bootstrap-zfs
   )
   local b
@@ -83,10 +92,33 @@ package() {
   install -Dm644 "$S/systemd/omarchy-zfs-scrub.service" "$pkgdir/usr/lib/systemd/system/omarchy-zfs-scrub.service"
   install -Dm644 "$S/systemd/omarchy-zfs-scrub.timer"   "$pkgdir/usr/lib/systemd/system/omarchy-zfs-scrub.timer"
 
+  # --- shared shell library -> /usr/share/omarchy-zfs/lib ---
+  install -Dm644 "$S/lib/remote-unlock.sh" "$pkgdir/usr/share/omarchy-zfs/lib/remote-unlock.sh"
+
   # --- ZFSBootMenu config reference + hooks -> /etc/zfsbootmenu ---
   install -Dm644 "$S/zfsbootmenu/config.yaml.example" "$pkgdir/etc/zfsbootmenu/config.yaml.example"
   install -Dm755 "$S/zfsbootmenu/hooks/load-key.d/01-omarchy-unlock.sh" "$pkgdir/etc/zfsbootmenu/hooks/load-key.d/01-omarchy-unlock.sh"
   install -Dm755 "$S/zfsbootmenu/hooks/setup.d/01-omarchy-theme.sh"     "$pkgdir/etc/zfsbootmenu/hooks/setup.d/01-omarchy-theme.sh"
+
+  # Network key fetch. Always installed, inert until omarchy-zfs-netkey-setup
+  # writes /etc/omarchy-netkey.conf -- the hook exits immediately without it, so
+  # baking it into every ZBM image costs nothing and makes enabling a config-only
+  # change.
+  install -Dm755 "$S/zfsbootmenu/hooks/load-key.d/00-omarchy-netkey.sh" "$pkgdir/etc/zfsbootmenu/hooks/load-key.d/00-omarchy-netkey.sh"
+
+  # --- vendored mkinitcpio hooks for the ZBM image -> /usr/share/omarchy-zfs ---
+  # Staged here, not in /etc/zfsbootmenu/initcpio: generate-zbm only searches
+  # directories listed in InitCPIOHookDirs, which omarchy-zfs-remote-unlock-setup
+  # registers when it copies these into place. See vendor/README.md.
+  install -Dm644 "$S/vendor/mkinitcpio-dropbear/dropbear_install" "$pkgdir/usr/share/omarchy-zfs/initcpio/install/dropbear"
+  install -Dm755 "$S/vendor/mkinitcpio-dropbear/dropbear_hook"    "$pkgdir/usr/share/omarchy-zfs/initcpio/hooks/dropbear"
+  install -Dm644 "$S/vendor/mkinitcpio-rclocal/rclocal_install"   "$pkgdir/usr/share/omarchy-zfs/initcpio/install/rclocal"
+  install -Dm755 "$S/vendor/mkinitcpio-rclocal/rclocal_hook"      "$pkgdir/usr/share/omarchy-zfs/initcpio/hooks/rclocal"
+  install -Dm644 "$S/vendor/mkinitcpio-dropbear/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE.mkinitcpio-dropbear"
+  install -Dm644 "$S/vendor/mkinitcpio-rclocal/LICENSE"  "$pkgdir/usr/share/licenses/$pkgname/LICENSE.mkinitcpio-rclocal"
+
+  # --- docs ---
+  install -Dm644 "$S/docs/netkey-server.md" "$pkgdir/usr/share/doc/$pkgname/netkey-server.md"
 
   # --- default config -> /etc/omarchy-zfs ---
   install -Dm644 "$S/config/autosnap.conf" "$pkgdir/etc/omarchy-zfs/autosnap.conf"

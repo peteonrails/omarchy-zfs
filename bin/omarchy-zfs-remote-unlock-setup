@@ -1,0 +1,317 @@
+#!/bin/bash
+
+# omarchy:summary=Bake an SSH server into ZFSBootMenu so an encrypted pool can be unlocked remotely
+# omarchy:requires-sudo=true
+# omarchy:args=[--dhcp|--static] [--iface NAME] [--port N] [--key PATH] [--no-rebuild] [--force]
+
+# On an encrypted root-on-ZFS system the boot stops at ZFSBootMenu's passphrase
+# prompt. On a remote/colo box nobody is there to type it, so the machine sits
+# unbooted until someone walks to it ("remote hands").
+#
+# This puts dropbear inside the ZBM image. On the next boot the box brings up
+# its NIC and listens for SSH while waiting at that prompt; you connect, run
+# `zfsbootmenu`, type the passphrase, and it kexecs into the real system (which
+# needs no second passphrase -- the in-pool initramfs carries the keyfile).
+#
+# Key-only auth, and the ZBM image lives on the unencrypted ESP, so it must
+# never contain the pool key. That invariant is asserted before we finish.
+#
+# For fully unattended reboots, layer omarchy-zfs-netkey-setup on top; this
+# remains the fallback when the keyserver is unreachable.
+
+set -o pipefail
+
+# shellcheck source=../lib/remote-unlock.sh
+source /usr/share/omarchy-zfs/lib/remote-unlock.sh || {
+  echo "Error: cannot source /usr/share/omarchy-zfs/lib/remote-unlock.sh" >&2
+  exit 1
+}
+
+TAG="remote-unlock"
+NET_MODE=""
+IFACE=""
+PORT="2222"
+PUBKEY=""
+NO_REBUILD=false
+FORCE=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dhcp)       NET_MODE="dhcp" ;;
+    --static)     NET_MODE="static" ;;
+    --iface)      IFACE="$2"; shift ;;
+    --port)       PORT="$2"; shift ;;
+    --key)        PUBKEY="$2"; shift ;;
+    --no-rebuild) NO_REBUILD=true ;;
+    --force)      FORCE=true ;;
+    -h|--help)
+      sed -n '3,6p' "$0" | sed 's/^# //'
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+  shift
+done
+
+have_gum() { command -v gum &>/dev/null; }
+
+confirm() {
+  if $FORCE; then return 0; fi
+  if have_gum; then
+    gum confirm "$1"
+  else
+    local reply
+    read -r -p "$1 [y/N] " reply
+    [[ $reply == [yY]* ]]
+  fi
+}
+
+ask() {
+  local prompt="$1" default="${2:-}" reply
+  if have_gum; then
+    reply=$(gum input --prompt "$prompt " --placeholder "$default" --value "$default")
+  else
+    read -r -p "$prompt [$default] " reply
+  fi
+  echo "${reply:-$default}"
+}
+
+# ---------------------------------------------------------------------------
+# Preflight
+# ---------------------------------------------------------------------------
+
+omarchy-fs-zfs || die "this system is not root-on-ZFS"
+
+require_local_zbm
+
+ENCROOT=$(root_encryption_root)
+if [[ -z $ENCROOT ]]; then
+  echo "This pool is not encrypted -- ZFSBootMenu will not prompt for a passphrase,"
+  echo "so there is nothing to unlock remotely. Nothing to do."
+  exit 0
+fi
+
+if ! command -v dropbear &>/dev/null || ! command -v dropbearkey &>/dev/null; then
+  echo "dropbear is required (it provides the SSH server baked into the ZBM image)."
+  confirm "Install dropbear now?" || die "dropbear is required"
+  sudo pacman -S --needed --noconfirm dropbear || die "failed to install dropbear"
+fi
+
+# ---------------------------------------------------------------------------
+# Network interface + mode
+# ---------------------------------------------------------------------------
+
+# Default to the interface carrying the default route -- on a colo box that is
+# the one the provider gave you.
+if [[ -z $IFACE ]]; then
+  IFACE=$(ip -o route get 1.1.1.1 2>/dev/null | grep -oP '(?<=dev )\S+' | head -1)
+  IFACE=${IFACE:-eth0}
+  IFACE=$(ask "Network interface ZBM should bring up:" "$IFACE")
+fi
+
+[[ -d /sys/class/net/$IFACE ]] || warn "interface '$IFACE' does not exist right now; continuing (names can differ in early boot)"
+
+if [[ -z $NET_MODE ]]; then
+  echo
+  echo "How should ZFSBootMenu get an address?"
+  echo "  static  -- fixed IP baked into the image (recommended for colo: no DHCP dependency)"
+  echo "  dhcp    -- request a lease at boot (fine on a LAN with a reservation)"
+  NET_MODE=$(ask "Mode (static/dhcp):" "static")
+fi
+[[ $NET_MODE == static || $NET_MODE == dhcp ]] || die "network mode must be 'static' or 'dhcp'"
+
+STATIC_IP=""; STATIC_PREFIX=""; STATIC_GW=""; STATIC_DNS=""
+if [[ $NET_MODE == static ]]; then
+  # Seed the prompts from the running config so the common case is just Enter.
+  cur_cidr=$(ip -4 -o addr show dev "$IFACE" 2>/dev/null | awk '{print $4}' | head -1)
+  cur_gw=$(ip -o route show default dev "$IFACE" 2>/dev/null | awk '{print $3}' | head -1)
+  STATIC_IP=$(ask "IPv4 address for ZBM:" "${cur_cidr%%/*}")
+  STATIC_PREFIX=$(ask "Prefix length:" "${cur_cidr##*/}")
+  STATIC_GW=$(ask "Default gateway:" "$cur_gw")
+  STATIC_DNS=$(ask "DNS server (only needed if the keyserver is a hostname):" "1.1.1.1")
+
+  [[ -n $STATIC_IP && -n $STATIC_PREFIX && -n $STATIC_GW ]] || die "static mode needs an address, prefix and gateway"
+fi
+
+# ---------------------------------------------------------------------------
+# Authorized key
+# ---------------------------------------------------------------------------
+
+# Deliberately NOT a symlink to ~/.ssh/authorized_keys (which the ZBM guide
+# suggests): the unlock key should be an explicit, narrow choice, and a symlink
+# would silently widen ZBM access every time you add a key for normal logins.
+if [[ -z $PUBKEY ]]; then
+  echo
+  echo "Public key allowed to unlock at the ZBM prompt (path or the key itself):"
+  candidate=""
+  for f in "$HOME"/.ssh/id_ed25519.pub "$HOME"/.ssh/id_rsa.pub; do
+    [[ -f $f ]] && { candidate="$f"; break; }
+  done
+  PUBKEY=$(ask "Key:" "$candidate")
+fi
+[[ -n $PUBKEY ]] || die "an authorized public key is required (dropbear is key-only)"
+
+if [[ -f $PUBKEY ]]; then
+  KEY_MATERIAL=$(cat "$PUBKEY")
+else
+  KEY_MATERIAL="$PUBKEY"
+fi
+grep -qE '^(ssh|ecdsa)-' <<<"$KEY_MATERIAL" || die "that does not look like an SSH public key: ${KEY_MATERIAL:0:40}"
+
+# ---------------------------------------------------------------------------
+# Apply
+# ---------------------------------------------------------------------------
+
+echo
+echo "About to configure remote unlock:"
+echo "  encryption root : $ENCROOT"
+echo "  interface       : $IFACE ($NET_MODE)"
+[[ $NET_MODE == static ]] && echo "  address         : $STATIC_IP/$STATIC_PREFIX via $STATIC_GW"
+echo "  ssh port        : $PORT"
+echo "  authorized key  : $(awk '{print $1, substr($2,1,16) "..." }' <<<"$KEY_MATERIAL")"
+echo
+confirm "Bake this into the ZFSBootMenu image?" || exit 0
+
+ensure_zbm_mkinitcpio_conf
+ensure_zbm_hook_dirs
+
+# --- dropbear host keys -------------------------------------------------------
+# Dedicated ZBM host keys, NOT the system's sshd keys: the ZBM image is on the
+# unencrypted ESP, so treat anything in it as public. A separate identity means
+# reading the ESP doesn't hand over the host key your normal sshd presents.
+sudo mkdir -p /etc/dropbear
+for keytype in rsa ecdsa ed25519; do
+  keyfile="/etc/dropbear/dropbear_${keytype}_host_key"
+  if [[ ! -s $keyfile ]]; then
+    if sudo dropbearkey -t "$keytype" -f "$keyfile" >/dev/null 2>&1; then
+      echo "Generated $keytype host key for ZBM"
+    elif [[ $keytype == ed25519 ]]; then
+      warn "dropbear could not generate an ed25519 host key (older dropbear); continuing"
+    else
+      die "failed to generate the $keytype host key"
+    fi
+  fi
+done
+
+# --- authorized key + port ----------------------------------------------------
+# The dropbear_install hook copies root_key to /root/.ssh/authorized_keys in the
+# image and does nothing at all if this file is missing or empty.
+echo "$KEY_MATERIAL" | sudo tee /etc/dropbear/root_key >/dev/null
+sudo chmod 600 /etc/dropbear/root_key
+
+# Off port 22 so an SSH client that reaches the booted OS and the ZBM prompt on
+# the same address doesn't see two different host keys on one port.
+sudo tee /etc/dropbear/dropbear.conf >/dev/null <<EOF
+# Written by omarchy-zfs-remote-unlock-setup. Read by the dropbear initcpio
+# hook inside the ZFSBootMenu image.
+dropbear_listen=$PORT
+EOF
+
+# --- initcpio hooks -----------------------------------------------------------
+install_vendored_hook dropbear
+
+NET_HOOK=""
+case "$NET_MODE" in
+  static)
+    install_vendored_hook rclocal
+    NET_HOOK="rclocal"
+
+    # Brought up by rc.hook before the dropbear hook starts listening.
+    sudo mkdir -p "$ZBM_INITCPIO_DIR"
+    sudo tee "$ZBM_INITCPIO_DIR/rc.local" >/dev/null <<EOF
+#!/bin/sh
+# Written by omarchy-zfs-remote-unlock-setup. Runs inside the ZFSBootMenu
+# image to bring up networking before dropbear starts.
+
+ip link show dev $IFACE >/dev/null 2>&1 || exit 0
+ip link set dev $IFACE up
+ip addr add $STATIC_IP/$STATIC_PREFIX brd + dev $IFACE
+ip route add default via $STATIC_GW
+EOF
+    if [[ -n $STATIC_DNS ]]; then
+      sudo tee -a "$ZBM_INITCPIO_DIR/rc.local" >/dev/null <<EOF
+
+cat > /etc/resolv.conf <<RESOLV
+nameserver $STATIC_DNS
+RESOLV
+EOF
+    fi
+    sudo chmod 755 "$ZBM_INITCPIO_DIR/rc.local"
+    ;;
+  dhcp)
+    # The 'net' hook comes from mkinitcpio-nfs-utils and reads the ip= cmdline.
+    if [[ ! -f /usr/lib/initcpio/install/net ]]; then
+      echo "DHCP in the ZBM image needs the 'net' hook from mkinitcpio-nfs-utils."
+      confirm "Install mkinitcpio-nfs-utils now?" || die "mkinitcpio-nfs-utils is required for DHCP mode"
+      sudo pacman -S --needed --noconfirm mkinitcpio-nfs-utils || die "failed to install mkinitcpio-nfs-utils"
+    fi
+    NET_HOOK="net"
+    zbm_cmdline_add "$TAG-cmdline" "ip=:::::$IFACE:dhcp"
+    ;;
+esac
+
+# --- NIC driver ---------------------------------------------------------------
+# dropbear_install runs add_checked_modules "/drivers/net/", which only picks up
+# what autodetect saw. Naming the driver explicitly means the image still has it
+# if autodetect is absent or the boot-time hardware differs.
+NIC_MODULE=""
+if [[ -e /sys/class/net/$IFACE/device/driver/module ]]; then
+  NIC_MODULE=$(basename "$(readlink -f "/sys/class/net/$IFACE/device/driver/module")")
+fi
+if [[ -z $NIC_MODULE ]]; then
+  warn "could not detect the driver for $IFACE; relying on autodetect to include it"
+else
+  echo "Including NIC driver: $NIC_MODULE"
+fi
+
+# --- write the mkinitcpio.conf block -----------------------------------------
+# One block, ordered: networking must run before dropbear listens.
+CONF_LINES=()
+[[ -n $NIC_MODULE ]] && CONF_LINES+=("MODULES+=($NIC_MODULE)")
+CONF_LINES+=("BINARIES+=(ip)")
+CONF_LINES+=("HOOKS+=($NET_HOOK)")
+CONF_LINES+=("HOOKS+=(dropbear)")
+[[ $NET_MODE == static ]] && CONF_LINES+=("rclocal_hook=$ZBM_INITCPIO_DIR/rc.local")
+
+zbm_conf_add "$TAG" "${CONF_LINES[@]}"
+
+# ---------------------------------------------------------------------------
+# Rebuild + verify
+# ---------------------------------------------------------------------------
+
+if $NO_REBUILD; then
+  echo
+  echo "Config written. Run 'sudo omarchy-refresh-zbm' to build the image."
+  exit 0
+fi
+
+echo
+omarchy-refresh-zbm || die "ZBM rebuild failed -- the previous image is still in place"
+
+VERIFY_PATHS=(
+  "usr/bin/dropbear"
+  "root/.ssh/authorized_keys"
+  "etc/dropbear/dropbear_rsa_host_key"
+)
+[[ $NET_MODE == static ]] && VERIFY_PATHS+=("etc/rc.hook")
+
+if verify_zbm_image "${VERIFY_PATHS[@]}"; then
+  cat <<EOF
+
+Remote unlock is configured.
+
+On the next boot the box will wait at the ZFSBootMenu prompt with SSH open:
+
+  ssh -p $PORT root@${STATIC_IP:-<address>}
+  # then, in that session:
+  zfsbootmenu
+
+Unlock there and it kexecs into the booted system; your SSH session drops at
+that point, which is the success signal.
+
+Test this BEFORE you rely on it -- reboot now while you still have console
+access, and confirm you can reach port $PORT.
+EOF
+else
+  die "the generated ZBM image failed verification (see above). Fix the reported item and re-run, or run omarchy-zfs-remote-unlock-remove to back out."
+fi

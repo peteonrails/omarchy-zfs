@@ -1,0 +1,87 @@
+#!/bin/bash
+
+# omarchy:summary=Stop ZFSBootMenu from fetching the pool key over the network
+# omarchy:requires-sudo=true
+# omarchy:args=[--no-rebuild] [--force]
+
+# Backs out omarchy-zfs-netkey-setup. Phase 1 (SSH to the ZBM prompt) is left
+# alone, so after this the box still unlocks remotely -- it just needs you to
+# type the passphrase again.
+#
+# Also the revocation step on the client side: once the client key is out of the
+# image, a stolen disk carries no keyserver credential. Revoke on the server too.
+
+set -o pipefail
+
+# shellcheck source=../lib/remote-unlock.sh
+source /usr/share/omarchy-zfs/lib/remote-unlock.sh || {
+  echo "Error: cannot source /usr/share/omarchy-zfs/lib/remote-unlock.sh" >&2
+  exit 1
+}
+
+NETKEY_DIR="$ZBM_ETC/netkey"
+NETKEY_CONF="/etc/omarchy-netkey.conf"
+NO_REBUILD=false
+FORCE=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-rebuild) NO_REBUILD=true ;;
+    --force)      FORCE=true ;;
+    -h|--help)
+      sed -n '3,6p' "$0" | sed 's/^# //'
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+  shift
+done
+
+confirm() {
+  if $FORCE; then return 0; fi
+  if command -v gum &>/dev/null; then
+    gum confirm "$1"
+  else
+    local reply
+    read -r -p "$1 [y/N] " reply
+    [[ $reply == [yY]* ]]
+  fi
+}
+
+if ! managed_block_present "$ZBM_MKINITCPIO" "netkey" && [[ ! -f $NETKEY_CONF ]]; then
+  echo "Network key fetch is not configured; nothing to remove."
+  exit 0
+fi
+
+echo "After this, reboots stop at the ZFSBootMenu passphrase prompt again."
+confirm "Continue?" || exit 0
+
+managed_block_remove "$ZBM_MKINITCPIO" "netkey"
+
+# The hook itself is package-owned and harmless without a config (it exits
+# immediately when /etc/omarchy-netkey.conf is absent), so leave it in place.
+sudo rm -f "$NETKEY_CONF"
+sudo rm -rf "$NETKEY_DIR"
+
+# Drop the shared hook-dirs block only if Phase 1 isn't using it.
+if ! managed_block_present "$ZBM_MKINITCPIO" "remote-unlock"; then
+  managed_block_remove "$ZBM_CONFIG" "hookdirs"
+fi
+
+if $NO_REBUILD; then
+  echo
+  echo "Config cleaned. Run 'sudo omarchy-refresh-zbm' to rebuild without the client credential."
+  exit 0
+fi
+
+echo
+omarchy-refresh-zbm || die "ZBM rebuild failed -- the client key may still be in the active image"
+
+cat <<EOF
+
+Network key fetch removed.
+
+Finish revocation on the keyserver as well -- delete this host's client
+certificate (or block its address). The old ZBM image may still exist in the
+ESP's version history until it rotates out.
+EOF

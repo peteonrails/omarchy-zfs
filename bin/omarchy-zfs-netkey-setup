@@ -1,0 +1,242 @@
+#!/bin/bash
+
+# omarchy:summary=Let ZFSBootMenu fetch the pool key from a keyserver so reboots need no one at all
+# omarchy:requires-sudo=true
+# omarchy:args=[--url URL] [--ca PATH] [--cert PATH] [--key PATH] [--no-rebuild] [--force]
+
+# Phase 2 of remote unlock. omarchy-zfs-remote-unlock-setup gets you SSH at the
+# ZFSBootMenu prompt, but a human still types the passphrase. This bakes a
+# load-key hook that fetches the pool key over mutual TLS instead, so an
+# unattended reboot (kernel update, power event, colo maintenance) comes back on
+# its own. If the keyserver can't be reached, boot falls through to the prompt --
+# so Phase 1 stays the fallback and must be set up first.
+#
+# THREAT MODEL -- read before enabling.
+#
+# The client certificate and its private key are baked into the ZBM image, which
+# lives on the UNENCRYPTED ESP. Anyone who takes the disk can read them and, if
+# they can also reach your keyserver, fetch the pool key. You revoke by deleting
+# the served key or dropping their source address at the firewall.
+#
+# So this trades "disk theft alone is useless" for "disk theft plus network
+# access is useful, until you revoke". For a colo box that would otherwise sit
+# unbooted until someone drives out, that is usually the right trade -- and it is
+# still strictly better than an unencrypted server. It is the wrong trade if the
+# threat you actually care about is seizure of the hardware by someone who can
+# also reach your home network.
+#
+# See docs/netkey-server.md for the server side.
+
+set -o pipefail
+
+# shellcheck source=../lib/remote-unlock.sh
+source /usr/share/omarchy-zfs/lib/remote-unlock.sh || {
+  echo "Error: cannot source /usr/share/omarchy-zfs/lib/remote-unlock.sh" >&2
+  exit 1
+}
+
+TAG="netkey"
+NETKEY_DIR="$ZBM_ETC/netkey"
+NETKEY_CONF="/etc/omarchy-netkey.conf"
+HOOK="$ZBM_ETC/hooks/load-key.d/00-omarchy-netkey.sh"
+
+URL=""
+CA_SRC=""
+CERT_SRC=""
+KEY_SRC=""
+NO_REBUILD=false
+FORCE=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --url)        URL="$2"; shift ;;
+    --ca)         CA_SRC="$2"; shift ;;
+    --cert)       CERT_SRC="$2"; shift ;;
+    --key)        KEY_SRC="$2"; shift ;;
+    --no-rebuild) NO_REBUILD=true ;;
+    --force)      FORCE=true ;;
+    -h|--help)
+      sed -n '3,6p' "$0" | sed 's/^# //'
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+  shift
+done
+
+have_gum() { command -v gum &>/dev/null; }
+
+confirm() {
+  if $FORCE; then return 0; fi
+  if have_gum; then
+    gum confirm "$1"
+  else
+    local reply
+    read -r -p "$1 [y/N] " reply
+    [[ $reply == [yY]* ]]
+  fi
+}
+
+ask() {
+  local prompt="$1" default="${2:-}" reply
+  if have_gum; then
+    reply=$(gum input --prompt "$prompt " --value "$default")
+  else
+    read -r -p "$prompt [$default] " reply
+  fi
+  echo "${reply:-$default}"
+}
+
+# ---------------------------------------------------------------------------
+# Preflight
+# ---------------------------------------------------------------------------
+
+omarchy-fs-zfs || die "this system is not root-on-ZFS"
+
+require_local_zbm
+
+ENCROOT=$(root_encryption_root)
+[[ -n $ENCROOT ]] || { echo "This pool is not encrypted; nothing to unlock. Nothing to do."; exit 0; }
+
+# Netkey needs a network inside the ZBM image, which is what remote-unlock-setup
+# configures (rclocal or net hook). Requiring it also guarantees the SSH fallback
+# exists -- enabling zero-touch unlock with no way in when the keyserver is down
+# would be strictly worse than doing nothing.
+if ! managed_block_present "$ZBM_MKINITCPIO" "remote-unlock"; then
+  cat >&2 <<'EOF'
+Error: remote unlock (Phase 1) is not configured.
+
+Network key fetch needs networking inside the ZFSBootMenu image, and it needs a
+fallback for when the keyserver is unreachable. Both come from:
+
+  omarchy-zfs-remote-unlock-setup
+
+Run that first, verify you can SSH to the ZBM prompt, then re-run this.
+EOF
+  exit 1
+fi
+
+KEYFILE=$(pool_keyfile)
+if [[ -z $KEYFILE ]]; then
+  cat >&2 <<EOF
+Error: $ENCROOT does not use a file-based keylocation.
+
+The keyserver serves the same key bytes the pool expects, so the pool must be
+keyed by a file (omarchy-bootstrap-zfs sets this up). Current keylocation:
+  $(zfs get -H -o value keylocation "$ENCROOT" 2>/dev/null)
+EOF
+  exit 1
+fi
+[[ -r $KEYFILE ]] || warn "cannot read $KEYFILE as this user; you'll need it to publish the key on the server"
+
+command -v curl &>/dev/null || die "curl is required (it is baked into the ZBM image to fetch the key)"
+
+[[ -f $HOOK ]] || die "missing $HOOK (reinstall omarchy-zfs)"
+
+# ---------------------------------------------------------------------------
+# Gather
+# ---------------------------------------------------------------------------
+
+[[ -n $URL ]] || URL=$(ask "Keyserver URL serving the pool key (https://...):" "")
+[[ -n $URL ]] || die "a keyserver URL is required"
+[[ $URL == https://* ]] || die "the keyserver URL must be https:// -- the key is the payload"
+
+[[ -n $CA_SRC ]]   || CA_SRC=$(ask "Pinned CA certificate that signed the keyserver:" "")
+[[ -n $CERT_SRC ]] || CERT_SRC=$(ask "Client certificate for this host:" "")
+[[ -n $KEY_SRC ]]  || KEY_SRC=$(ask "Client private key for this host:" "")
+
+for f in "$CA_SRC" "$CERT_SRC" "$KEY_SRC"; do
+  [[ -n $f ]] || die "CA, client certificate and client key are all required (see docs/netkey-server.md to create them)"
+  [[ -f $f ]] || die "no such file: $f"
+done
+
+cat <<EOF
+
+About to enable zero-touch unlock:
+  encryption root : $ENCROOT
+  keyserver       : $URL
+  client cert     : $CERT_SRC
+  pinned CA       : $CA_SRC
+
+The client key will be baked into the ZBM image on the unencrypted ESP.
+Anyone who takes this disk can read it -- see the threat model at the top of
+this script ($(basename "$0")).
+EOF
+
+confirm "Enable network key fetch?" || exit 0
+
+# ---------------------------------------------------------------------------
+# Apply
+# ---------------------------------------------------------------------------
+
+ensure_zbm_mkinitcpio_conf
+ensure_zbm_hook_dirs
+
+sudo install -d -m 700 "$NETKEY_DIR"
+sudo install -m 644 "$CA_SRC"   "$NETKEY_DIR/ca.crt"
+sudo install -m 644 "$CERT_SRC" "$NETKEY_DIR/client.crt"
+sudo install -m 600 "$KEY_SRC"  "$NETKEY_DIR/client.key"
+
+sudo tee "$NETKEY_CONF" >/dev/null <<EOF
+# Written by omarchy-zfs-netkey-setup. Baked into the ZFSBootMenu image and read
+# by /etc/zfsbootmenu/hooks/load-key.d/00-omarchy-netkey.sh at boot.
+NETKEY_URL="$URL"
+NETKEY_CA="$NETKEY_DIR/ca.crt"
+NETKEY_CERT="$NETKEY_DIR/client.crt"
+NETKEY_KEY="$NETKEY_DIR/client.key"
+# Total budget before falling through to the passphrase prompt: TRIES * TIMEOUT.
+# Keep it short -- a slow fallthrough is a colo box sitting unbooted.
+NETKEY_TRIES=4
+NETKEY_TIMEOUT=5
+EOF
+sudo chmod 600 "$NETKEY_CONF"
+
+# curl is not in a stock ZBM image; FILES pulls the certs and conf in at the
+# same absolute paths the hook reads.
+zbm_conf_add "$TAG" \
+  "BINARIES+=(curl)" \
+  "FILES+=($NETKEY_CONF)" \
+  "FILES+=($NETKEY_DIR/ca.crt)" \
+  "FILES+=($NETKEY_DIR/client.crt)" \
+  "FILES+=($NETKEY_DIR/client.key)"
+
+# ---------------------------------------------------------------------------
+# Rebuild + verify
+# ---------------------------------------------------------------------------
+
+if $NO_REBUILD; then
+  echo
+  echo "Config written. Run 'sudo omarchy-refresh-zbm' to build the image."
+  exit 0
+fi
+
+echo
+omarchy-refresh-zbm || die "ZBM rebuild failed -- the previous image is still in place"
+
+# generate-zbm copies PreHooksDir scripts to /libexec/hooks/<stage>.d/ inside the
+# image -- NOT to the /etc/zfsbootmenu path they live at on the host.
+if verify_zbm_image \
+     "usr/bin/curl" \
+     "${NETKEY_CONF#/}" \
+     "${NETKEY_DIR#/}/client.crt" \
+     "libexec/hooks/load-key.d/00-omarchy-netkey.sh"; then
+  cat <<EOF
+
+Zero-touch unlock is configured.
+
+Publish the pool key on the keyserver (see docs/netkey-server.md):
+
+  $KEYFILE  ->  $URL
+
+Then test the three paths, in this order, while you still have console access:
+
+  1. keyserver up      -> reboot; the box should come back with no interaction
+  2. keyserver blocked -> reboot; should fall through to the prompt within
+                          ~40s, reachable over SSH (Phase 1)
+  3. network down      -> reboot; should land at the local prompt
+
+Revoke by deleting the served key or blocking this host at the keyserver.
+EOF
+else
+  die "the generated ZBM image failed verification (see above). Fix the reported item and re-run, or run omarchy-zfs-netkey-remove to back out."
+fi

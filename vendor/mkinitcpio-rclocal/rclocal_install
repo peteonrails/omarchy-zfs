@@ -1,0 +1,56 @@
+#!/bin/bash
+
+copy_rc_script() {
+  local script="$1"
+  local stage="$2"
+
+  [ -n "${script}" ] || return 0
+
+  if [ -z "${stage}" ]; then
+    error "must specify a stage for rclocal script installation"
+    exit 1
+  fi
+
+  if ! [ -f "${script}" ]; then
+    error "missing rclocal script ${script} for stage ${stage}"
+    exit 1
+  fi
+
+  echo "Adding rclocal script ${script} for stage ${stage}"
+  if ! add_file "${script}" "/etc/rc.${stage}" 0755; then
+    error "failed to add rclocal script ${script} for stage ${stage}"
+    exit 1
+  fi
+
+  return 0
+}
+
+build () {
+  copy_rc_script "${rclocal_earlyhook}" "earlyhook"
+  copy_rc_script "${rclocal_hook}" "hook"
+  copy_rc_script "${rclocal_latehook}" "latehook"
+  copy_rc_script "${rclocal_cleanup}" "cleanup"
+
+  add_runscript
+}
+
+help ()
+{
+    cat<<HELPEOF
+This hook provides a mechanism to inject arbitrary scripts into each hook stage
+of the initramfs. In mkinitcpio.conf, define any of the following variables to
+the path of a script (compiled binaries are not guaranteed to work) that will
+copied into the initramfs and executed in the corresponding hook stage:
+
+- rclocal_earlyhook
+- rclocal_hook
+- rclocal_latehook
+- rclocal_cleanup
+
+Any undefined variable will be ignored, but a variable that specifies the path
+to a non-existent file will trigger an error. Each script will have mode 0755
+set when copied into the initramfs.
+HELPEOF
+}
+
+# vim: softtabstop=2 shiftwidth=2 expandtab

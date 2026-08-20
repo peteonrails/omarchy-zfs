@@ -23,6 +23,8 @@ can never silently strip the ZFS layer.
 | `/usr/bin/omarchy-zfs-snapper-guard` | **self-heal**: drop stale non-btrfs snapper configs |
 | `/usr/bin/omarchy-zfs-bootorder-guard` | **self-heal**: keep ZFSBootMenu first in the EFI BootOrder |
 | `/usr/bin/omarchy-zfs-hibernation-{setup,remove,available}` | ZFS zvol swap hibernation |
+| `/usr/bin/omarchy-zfs-remote-unlock-{setup,remove}` | SSH into ZFSBootMenu to unlock a remote box |
+| `/usr/bin/omarchy-zfs-netkey-{setup,remove}` | zero-touch unlock via a mutual-TLS keyserver |
 | `/usr/bin/omarchy-bootstrap-zfs` | pool/dataset/ZBM bootstrap (installer/DR) |
 | `/usr/share/libalpm/hooks/00-zfs-autosnap.hook` | PreTransaction snapshot |
 | `/usr/share/libalpm/hooks/90-omarchy-zfs-kernel-guard.hook` | PreTransaction kernel guard |
@@ -30,7 +32,9 @@ can never silently strip the ZFS layer.
 | `/usr/share/libalpm/hooks/zz-omarchy-zfs-snapper-guard.hook` | PostTransaction snapper self-heal |
 | `/usr/share/libalpm/hooks/zz-omarchy-zfs-bootorder-guard.hook` | PostTransaction BootOrder self-heal |
 | `/usr/lib/systemd/system/omarchy-zfs-scrub.{service,timer}` | monthly scrub |
-| `/etc/zfsbootmenu/config.yaml.example`, `hooks/**` | ZBM reference config + branded unlock/theme |
+| `/etc/zfsbootmenu/config.yaml.example`, `hooks/**` | ZBM reference config + branded unlock/theme/netkey |
+| `/usr/share/omarchy-zfs/lib/remote-unlock.sh` | shared helpers for the remote-unlock tools |
+| `/usr/share/omarchy-zfs/initcpio/**` | vendored `dropbear`/`rclocal` hooks for the ZBM image |
 | `/etc/omarchy-zfs/autosnap.conf` | autosnap tunables |
 | `/etc/omarchy-zfs/bootorder.conf` | boot-order guard opt-out |
 
@@ -134,6 +138,74 @@ migration — and the update — will abort at the migration step rather than at
 the snapshot step. No currently-pending migration does this. The durable fix is
 upstream: `omarchy-snapshot` should skip non-btrfs roots, and `snapper.sh`
 should tolerate `create-config` failing.
+
+## Remote unlock (no remote hands)
+
+On an encrypted pool, boot stops at ZFSBootMenu's passphrase prompt. That is one
+interactive gate — after it, ZBM kexecs the in-pool kernel, whose initramfs
+carries the keyfile, so there is no second prompt. But on a headless or colo box
+nobody is there to satisfy it, and the machine sits unbooted until someone walks
+to it.
+
+Two layers, meant to be applied in order:
+
+```sh
+omarchy-zfs-remote-unlock-setup   # Phase 1: SSH to the ZBM prompt
+omarchy-zfs-netkey-setup          # Phase 2: fetch the key, unlock unattended
+```
+
+**Phase 1 — SSH into ZFSBootMenu.** Puts `dropbear` (key-only, port 2222 by
+default) and a NIC driver into the ZBM image, with either a static address baked
+in via the `rclocal` hook or DHCP via `net` + `ip=`. The stalled box answers SSH;
+you run `zfsbootmenu`, unlock, and it kexecs — your session dropping is the
+success signal. A human is still involved, but no hands on hardware.
+
+**Phase 2 — zero-touch.** `00-omarchy-netkey.sh` runs before the branded prompt
+and fetches the pool key over mutual TLS from a keyserver you run
+(`docs/netkey-server.md`). Success means an unattended reboot comes back on its
+own; failure falls through to the Phase 1 prompt within ~40s. Phase 1 is
+therefore a prerequisite — it supplies both the networking and the fallback.
+
+### Requires a locally generated ZBM
+
+Both phases modify the ZFSBootMenu image, so they need `zfsbootmenu` (AUR) and
+`generate-zbm`. The prebuilt EFI from `get.zfsbootmenu.org` — which
+`omarchy-bootstrap-zfs` falls back to — is a fixed binary and **cannot** be
+used; the setup scripts refuse with instructions rather than half-configuring.
+
+Note that `generate-zbm` does not search `/etc/zfsbootmenu/initcpio` on its own.
+Setup registers it via `Global: InitCPIOHookDirs` in `config.yaml`; without that
+the hooks are silently ignored and you get an image with no `dropbear` and no
+warning. Every edit lives between `# >>> omarchy-zfs remote-unlock >>>` markers,
+so re-running is idempotent and the `-remove` tools restore the originals.
+
+### Security model
+
+The ESP is unencrypted, so treat everything in the ZBM image as public. The
+`-setup` scripts assert after each rebuild that the pool keyfile is **not** in
+the image (alongside the existing whole-ESP check in `omarchy-refresh-zbm`).
+
+| Enabled | Attacker with the disk | Attacker on the network |
+|---|---|---|
+| Phase 1 only | Gets a dropbear host key and your *public* key. Pool stays sealed. | Sees a closed port; auth is key-only, passwords disabled. |
+| Phase 1 + 2 | Also gets the client certificate — usable to fetch the pool key **until you revoke**. | Must present a client cert signed by your pinned CA. |
+
+Phase 2 deliberately trades "stolen disk is useless" for "stolen disk is useful
+only while my keyserver still answers it". For a box that would otherwise stay
+down until someone drives out, that is usually right — and still far better than
+an unencrypted server. It is the wrong trade if your actual threat is seizure of
+the hardware by someone who can also reach your keyserver. Revocation is
+deletion: drop the served key or the firewall rule, then rotate with
+`zfs change-key`.
+
+### Before you rely on it
+
+The failure mode is invisible until a reboot you cannot attend, so test all
+three paths while you still have console access: keyserver reachable (boots
+unattended), keyserver blocked (falls through to SSH), network down (lands at the
+local prompt). Also confirm the box powers itself back on — remote unlock solves
+unlocking, not power. Check BIOS restore-on-AC-loss, and that you have colo
+IPMI/iKVM or a switched PDU, *before* shipping the hardware.
 
 ## Install
 

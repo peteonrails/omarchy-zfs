@@ -1,0 +1,103 @@
+#!/bin/bash
+
+# omarchy:summary=Remove the SSH server from ZFSBootMenu (undo remote unlock)
+# omarchy:requires-sudo=true
+# omarchy:args=[--keep-keys] [--no-rebuild] [--force]
+
+# Backs out omarchy-zfs-remote-unlock-setup: strips our managed blocks from
+# ZBM's config, drops the initcpio hooks, and rebuilds the image so dropbear is
+# no longer in it. After this the box unlocks only at a physical console.
+#
+# Host keys are kept by default -- removing and re-adding remote unlock would
+# otherwise hand you a host-key mismatch on the next connect. --keep-keys makes
+# that explicit; answer no to the prompt to delete them.
+
+set -o pipefail
+
+# shellcheck source=../lib/remote-unlock.sh
+source /usr/share/omarchy-zfs/lib/remote-unlock.sh || {
+  echo "Error: cannot source /usr/share/omarchy-zfs/lib/remote-unlock.sh" >&2
+  exit 1
+}
+
+KEEP_KEYS=false
+NO_REBUILD=false
+FORCE=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --keep-keys)  KEEP_KEYS=true ;;
+    --no-rebuild) NO_REBUILD=true ;;
+    --force)      FORCE=true ;;
+    -h|--help)
+      sed -n '3,6p' "$0" | sed 's/^# //'
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+  shift
+done
+
+confirm() {
+  if $FORCE; then return 0; fi
+  if command -v gum &>/dev/null; then
+    gum confirm "$1"
+  else
+    local reply
+    read -r -p "$1 [y/N] " reply
+    [[ $reply == [yY]* ]]
+  fi
+}
+
+# Nothing to do is a success, not an error -- this runs from cleanup paths.
+if ! managed_block_present "$ZBM_MKINITCPIO" "remote-unlock" &&
+   ! managed_block_present "$ZBM_CONFIG" "remote-unlock-cmdline"; then
+  echo "Remote unlock is not configured; nothing to remove."
+  exit 0
+fi
+
+echo "This removes SSH access to the ZFSBootMenu prompt. After the rebuild, an"
+echo "encrypted pool can only be unlocked from a physical console."
+confirm "Continue?" || exit 0
+
+# --- config blocks ------------------------------------------------------------
+managed_block_remove "$ZBM_MKINITCPIO" "remote-unlock"
+managed_block_remove "$ZBM_CONFIG" "remote-unlock-cmdline"
+
+# The hook-dirs block and the netkey hook are shared with omarchy-zfs-netkey-setup;
+# only drop it if netkey isn't using it too.
+if ! managed_block_present "$ZBM_MKINITCPIO" "netkey" &&
+   [[ ! -f $ZBM_ETC/hooks/load-key.d/00-omarchy-netkey.sh ]]; then
+  managed_block_remove "$ZBM_CONFIG" "hookdirs"
+fi
+
+# --- hook files ---------------------------------------------------------------
+for name in dropbear rclocal; do
+  sudo rm -f "$ZBM_INITCPIO_DIR/install/$name" "$ZBM_INITCPIO_DIR/hooks/$name"
+done
+sudo rm -f "$ZBM_INITCPIO_DIR/rc.local"
+
+# --- dropbear identity --------------------------------------------------------
+# root_key always goes: leaving it means a future generate-zbm (run by any
+# unrelated update) would silently re-authorize that key if the hook came back.
+sudo rm -f /etc/dropbear/root_key /etc/dropbear/dropbear.conf
+
+if $KEEP_KEYS; then
+  echo "Keeping ZBM dropbear host keys in /etc/dropbear"
+elif confirm "Delete the ZBM dropbear host keys too? (re-adding remote unlock will then show a host-key change)"; then
+  sudo rm -f /etc/dropbear/dropbear_{rsa,ecdsa,ed25519}_host_key
+  echo "Removed ZBM dropbear host keys"
+fi
+
+# --- rebuild ------------------------------------------------------------------
+if $NO_REBUILD; then
+  echo
+  echo "Config cleaned. Run 'sudo omarchy-refresh-zbm' to rebuild the image without dropbear."
+  exit 0
+fi
+
+echo
+omarchy-refresh-zbm || die "ZBM rebuild failed -- dropbear may still be in the active image"
+
+echo
+echo "Remote unlock removed."

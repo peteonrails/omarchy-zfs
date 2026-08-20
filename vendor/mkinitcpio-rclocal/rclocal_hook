@@ -1,0 +1,30 @@
+#!/usr/bin/ash
+# vim: softtabstop=2 shiftwidth=2 expandtab
+
+run_earlyhook() {
+  if [ -x /etc/rc.earlyhook ]; then
+    echo "Running rc.earlyhook"
+    /etc/rc.earlyhook
+  fi
+}
+
+run_hook () {
+  if [ -x /etc/rc.hook ]; then
+    echo "Running rc.hook"
+    /etc/rc.hook
+  fi
+}
+
+run_latehook() {
+  if [ -x /etc/rc.latehook ]; then
+    echo "Running rc.latehook"
+    /etc/rc.latehook
+  fi
+}
+
+run_cleanuphook () {
+  if [ -x /etc/rc.cleanup ]; then
+    echo "Running rc.cleanup"
+    /etc/rc.cleanup
+  fi
+}
