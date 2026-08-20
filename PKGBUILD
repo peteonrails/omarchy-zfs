@@ -96,5 +96,10 @@ package() {
   # builds a UKI on the ESP. This preset keeps the plain pair existing.
   install -Dm644 "$S/mkinitcpio/linux-zbm.preset" "$pkgdir/etc/mkinitcpio.d/linux-zbm.preset"
 
+  # Static drop-in keeping /etc/hostid in every initramfs, independent of the
+  # zfs hook and of anything `omarchy update` overwrites.
+  install -Dm644 "$S/mkinitcpio/zz-omarchy-zfs-hostid.conf" \
+    "$pkgdir/etc/mkinitcpio.conf.d/zz-omarchy-zfs-hostid.conf"
+
   install -Dm644 "$S/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

@@ -31,6 +31,7 @@ can never silently strip the ZFS layer.
 | `/usr/share/libalpm/hooks/zz-omarchy-zfs-bootorder-guard.hook` | PostTransaction BootOrder self-heal |
 | `/usr/lib/systemd/system/omarchy-zfs-scrub.{service,timer}` | monthly scrub |
 | `/etc/zfsbootmenu/config.yaml.example`, `hooks/**` | ZBM reference config + branded unlock/theme |
+| `/etc/mkinitcpio.conf.d/zz-omarchy-zfs-hostid.conf` | keep `/etc/hostid` in every initramfs (static, not generated) |
 | `/etc/omarchy-zfs/autosnap.conf` | autosnap tunables |
 | `/etc/omarchy-zfs/bootorder.conf` | boot-order guard opt-out |
 
@@ -46,6 +47,22 @@ derives the effective `HOOKS` line, inserts `zfs` before `filesystems`, writes
 it to our own `zz-omarchy-zfs.conf` drop-in (which sorts after — and therefore
 overrides — `omarchy_hooks.conf`), and regenerates the initramfs + ZBM. Upstream
 hook additions are inherited automatically; we only guarantee `zfs` placement.
+
+## The hostid guarantee
+
+ZFS records the creating host's hostid in the pool label and refuses to import
+a pool from "another system" without `-f`. So the hostid the initramfs sees has
+to match the one the pool was created with, which means `/etc/hostid` must be
+inside every initramfs.
+
+The `zfs` mkinitcpio install hook copies it in — but relying on that alone puts
+a boot-critical file at the mercy of someone else's hook. `omarchy update`
+overwrites Omarchy's own drop-in on every run, and our `zz-omarchy-zfs.conf` is
+*generated*, so it is only as good as `omarchy-zfs-ensure-mkinitcpio` having
+run. `zz-omarchy-zfs-hostid.conf` is static and package-owned: nothing derives
+it and no upstream `--overwrite` has reason to touch it. Because
+`omarchy-zfs-ensure-mkinitcpio` evaluates the whole `conf.d` chain when it
+builds the standalone ZBM config, the in-pool image inherits the entry too.
 
 ## The update-survivability guarantee
 
