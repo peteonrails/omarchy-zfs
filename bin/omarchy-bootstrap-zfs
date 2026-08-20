@@ -545,6 +545,29 @@ stage_create_datasets() {
 
 stage_mount_filesystems() {
   run mkdir -p "$MNT"
+
+  # The datasets from stage_create_datasets mount the instant they are created
+  # (canmount defaults to on), so zroot/data/home & friends are ALREADY mounted
+  # under the altroot at $MNT/home, $MNT/var/log, ... The root dataset is
+  # canmount=noauto, so it alone is still unmounted. Mounting it at $MNT now
+  # would land on top of those child mounts: they stay in the kernel mount
+  # table while their paths stop resolving (stat gives ENOENT), and every later
+  # write to $MNT/home silently lands in the ROOT dataset instead. That is the
+  # shadowed-write failure that makes an install look perfect and then come up
+  # with no home directory. Unmount the children (deepest path first), mount
+  # the root, then let ZFS remount them in the correct order underneath it.
+  if ! (( DRY_RUN )); then
+    local ds
+    while read -r ds; do
+      zfs unmount "$ds" 2>/dev/null || warn "could not unmount $ds before mounting the root dataset"
+    # Order by mountpoint LENGTH descending, not lexically: locale collation
+    # ignores '/' and would hand back /mnt/var before /mnt/var/log, i.e. a
+    # parent before its child, which cannot unmount.
+    done < <(zfs list -H -r -o name,mountpoint,mounted "$POOL_NAME" |
+             awk '$2 ~ /^\// && $3 == "yes" { print length($2), $1 }' |
+             sort -k1,1nr | awk '{ print $2 }')
+  fi
+
   run mount -t zfs -o zfsutil "$DATASET_ROOT" "$MNT"
 
   # Mount everything else by letting ZFS resolve mountpoints relative to /mnt
@@ -575,6 +598,14 @@ stage_mount_filesystems() {
       mountpoint -q "$mp" && continue
       if ! err=$(zfs mount "$ds" 2>&1); then
         warn "zfs mount $ds failed: $err"
+        if [[ $err == *"already mounted"* ]]; then
+          # ZFS thinks it is mounted but $mp does not resolve, so the mount is
+          # shadowed by something mounted over an ancestor after it. Drop it
+          # and mount it again, now in the right order.
+          warn "$ds is mounted but $mp does not resolve (shadowed); remounting"
+          zfs unmount "$ds" 2>/dev/null || zfs unmount -f "$ds" 2>/dev/null || true
+          err=$(zfs mount "$ds" 2>&1) || warn "remount of $ds failed: $err"
+        fi
         if [[ $err == *"not empty"* && -d $mp ]]; then
           warn "moving pre-existing contents of $mp aside so the dataset can mount"
           run mkdir -p "$MNT/var/tmp/omarchy-zfs-preexisting"
