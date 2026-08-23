@@ -22,7 +22,7 @@ can never silently strip the ZFS layer.
 | `/usr/bin/omarchy-zfs-ensure-mkinitcpio` | **self-heal**: re-assert the `zfs` mkinitcpio hook |
 | `/usr/bin/omarchy-zfs-snapper-guard` | **self-heal**: drop stale non-btrfs snapper configs |
 | `/usr/bin/omarchy-zfs-bootorder-guard` | **self-heal**: keep ZFSBootMenu first in the EFI BootOrder |
-| `/usr/bin/omarchy-zfs-hibernation-{setup,remove,available}` | ZFS zvol swap hibernation |
+| `/usr/bin/omarchy-zfs-hibernation-{setup,remove,available}` | ZFS zvol swap hibernation (**experimental**: setup works and the swap inherits pool encryption, but suspend-to-disk is untested here and OpenZFS discourages swap on a zvol) |
 | `/usr/bin/omarchy-bootstrap-zfs` | pool/dataset/ZBM bootstrap (installer/DR) |
 | `/usr/share/libalpm/hooks/00-zfs-autosnap.hook` | PreTransaction snapshot |
 | `/usr/share/libalpm/hooks/90-omarchy-zfs-kernel-guard.hook` | PreTransaction kernel guard |
