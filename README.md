@@ -160,9 +160,13 @@ From the [AUR](https://aur.archlinux.org/packages/omarchy-zfs):
 yay -S omarchy-zfs    # or paru, or makepkg from a manual AUR clone
 ```
 
-Note: the `omarchy` dependency is satisfied by the real Omarchy package from
-`pkgs.omarchy.org` (already installed on any Omarchy system). The AUR package
-named `omarchy` is an unrelated third-party placeholder — don't build it.
+Note: `omarchy` is **not** a pacman dependency, deliberately. It ships only from
+`pkgs.omarchy.org`, so it is satisfiable from neither the official repos nor the
+AUR, and declaring it made this package unbuildable in a clean chroot. You still
+need Omarchy: the install scriptlet checks for it and tells you if it is missing.
+
+(There used to be an unrelated third-party package named `omarchy` in the AUR.
+It has since been removed.)
 
 ## Build from source
 
