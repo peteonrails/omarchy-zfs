@@ -29,6 +29,7 @@
 set -uo pipefail
 
 CACHE_DIR="/etc/zfs/zfs-list.cache"
+ZEDLET="/usr/lib/zfs/zed.d/history_event-zfs-list-cacher.sh"
 GEN_DIR="/run/systemd/generator"
 POOL=""
 DRY_RUN=false
@@ -75,7 +76,7 @@ echo
 echo "This will, for each pool:"
 echo "  - enable and start zfs-zed (it keeps the cache current)"
 echo "  - create $CACHE_DIR/<pool>, which opts the pool into the generator"
-echo "  - prime the cache by setting and clearing a user property"
+echo "  - populate the cache with the same columns the zed cacher writes"
 echo "  - reload systemd and report the units that were generated"
 echo
 echo "Datasets already mounted from /etc/fstab should be removed from fstab"
@@ -108,18 +109,22 @@ for pool in "${pools[@]}"; do
   if [[ -s $cache ]]; then
     ok "cache already populated ($(wc -l < "$cache") datasets)"
   else
-    run touch "$cache"
-    # Priming: the zedlet reacts to history events. Setting a user property and
-    # then inheriting it emits two, costs nothing, and leaves no trace. A no-op
-    # `zfs set` of a real property would be riskier for no benefit.
-    run zfs set "org.omarchy-zfs:listcache=priming" "$pool"
-    run zfs inherit "org.omarchy-zfs:listcache" "$pool"
-
-    if ! $DRY_RUN; then
-      for _ in {1..10}; do
-        [[ -s $cache ]] && break
-        sleep 0.5
-      done
+    # Prime it ourselves rather than waiting for zed. The cacher zedlet only
+    # reacts to a whitelist of property changes (canmount, mountpoint, atime,
+    # keylocation, the org.openzfs.systemd:* set), so a throwaway user property
+    # is silently ignored: verified on a test VM, where the cache stayed empty.
+    #
+    # Instead do exactly what the zedlet does, reading its own column list so we
+    # cannot drift from the installed version. zed keeps it current afterwards.
+    props=$(sed -n '/^PROPS="/,/"$/p' "$ZEDLET" | tr -d '\\\n' | sed 's/^PROPS="//; s/"$//')
+    if [[ -z $props ]]; then
+      warn "could not read the property list from $ZEDLET; falling back to a property nudge"
+      run zfs set "canmount=$(zfs get -H -o value canmount "$pool")" "$pool"
+    elif $DRY_RUN; then
+      printf '\033[1;90m[dry-run]\033[0m %s\n' "zfs list -H -t filesystem -o <props> -r $pool | sort > $cache"
+    else
+      zfs list -H -t filesystem -o "$props" -r "$pool" | sort > "$cache" ||
+        warn "could not populate $cache"
     fi
 
     if $DRY_RUN; then
@@ -128,7 +133,7 @@ for pool in "${pools[@]}"; do
       ok "cache written ($(wc -l < "$cache") datasets)"
     else
       warn "$cache is still empty."
-      warn "  zed may not have seen the event. Try: sudo systemctl restart zfs-zed, then re-run."
+      warn "  Check that zfs list works for this pool and that $CACHE_DIR is writable."
       continue
     fi
   fi

@@ -54,11 +54,18 @@ for moddir in /usr/lib/modules/*/; do
   # Skip stale module trees left behind by removed kernels.
   [[ -e "$moddir/pkgbase" ]] || continue
   kver=$(basename "$moddir")
-  if compgen -G "$moddir/updates/dkms/zfs.ko*" >/dev/null; then
+  # modinfo is the authoritative answer to "can this kernel load zfs": it
+  # resolves the module the way modprobe will. Preferred over globbing a path,
+  # because a prebuilt (non-DKMS) provider puts the module elsewhere in the
+  # tree, and because a stray copy in some unrelated subdirectory should not
+  # count as success. A plain find for zfs.ko* did exactly that in testing and
+  # silently suppressed a warning it should have printed.
+  if modinfo -k "$kver" zfs &>/dev/null; then
     continue
   fi
-  # A prebuilt (non-DKMS) provider puts it elsewhere in the tree.
-  if find "$moddir" -name 'zfs.ko*' -print -quit 2>/dev/null | grep -q .; then
+  # modinfo needs modules.dep; if depmod has not run since a build, fall back to
+  # the DKMS output path so we do not warn about a module that is really there.
+  if compgen -G "$moddir/updates/dkms/zfs.ko*" >/dev/null; then
     continue
   fi
   missing+=("$kver|$(headers_for "$moddir")")
