@@ -1,7 +1,7 @@
 # Maintainer: Pete Jackson <pete@tern.travel>
 pkgname=omarchy-zfs
-pkgver=1.1.3
-pkgrel=4
+pkgver=1.1.4
+pkgrel=1
 pkgdesc="Root-on-ZFS + ZFSBootMenu support layer for Omarchy Quattro"
 arch=('any')
 url="https://github.com/peteonrails/omarchy-zfs"
@@ -28,6 +28,10 @@ depends=(
   'efibootmgr'
 )
 optdepends=(
+  # zfs-dkms and zfs-dkms-git declare no headers dependency (they cannot know
+  # which kernel you boot), and a DKMS build failure is only a pacman warning.
+  # Without these you get a silent no-module system. Match your kernel.
+  'linux-headers: build the ZFS module for the stock kernel (linux-lts-headers etc. for others)'
   # Required in practice, but unsatisfiable by pacman: it comes from the
   # third-party repo at pkgs.omarchy.org. omarchy-dev provides/conflicts it.
   'omarchy: the desktop this integrates with. REQUIRED at runtime; install it from pkgs.omarchy.org'
@@ -59,6 +63,7 @@ package() {
     omarchy-zfs-snapshot omarchy-zfs-scrub omarchy-zfs-kernel-compat-check
     omarchy-zfs-autosnap omarchy-zfs-ensure-mkinitcpio omarchy-zfs-kernel-install
     omarchy-zfs-snapper-guard omarchy-zfs-bootorder-guard omarchy-zfs-embed-pool-key
+    omarchy-zfs-module-check omarchy-zfs-boot-mounts-setup
     omarchy-zfs-hibernation-setup omarchy-zfs-hibernation-remove omarchy-zfs-hibernation-available
     omarchy-bootstrap-zfs
   )
@@ -74,6 +79,7 @@ package() {
     zz-omarchy-zfs-ensure-mkinitcpio.hook
     zz-omarchy-zfs-snapper-guard.hook
     zz-omarchy-zfs-bootorder-guard.hook
+    zz-omarchy-zfs-module-check.hook
   )
   local h
   for h in "${hooks[@]}"; do

@@ -1,0 +1,37 @@
+# Warn when a transaction leaves an installed kernel without a ZFS module.
+#
+# A DKMS build failure is only a pacman WARNING, so `pacman -Syu` happily
+# completes having produced no zfs.ko, and scrolls the warning off the screen.
+# You find out at the next reboot: no pools, and on a ZFS root, no boot.
+#
+# The common cause is missing kernel headers. Neither zfs-dkms nor zfs-dkms-git
+# declares them as a dependency (they cannot know which kernel you boot), so a
+# system with headers stripped builds nothing and reports nothing. Reported as
+# issue #2 by @oemsysadm, on a btrfs root with ZFS on /home.
+#
+# Triggers on the kernels and on the packages that build or provide the module,
+# rather than on every transaction: this only changes when one of those moves.
+# omarchy-zfs-module-check warns and always exits 0, because failing a
+# PostTransaction hook cannot un-commit the transaction that already ran.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = linux
+Target = linux-lts
+Target = linux-zen
+Target = linux-hardened
+Target = linux-rt
+Target = linux-rt-lts
+Target = dkms
+Target = zfs-dkms
+Target = zfs-dkms-git
+Target = zfs-linux
+Target = zfs-linux-lts
+
+[Action]
+Description = Checking that every installed kernel has a ZFS module (omarchy-zfs)...
+When = PostTransaction
+Exec = /usr/bin/omarchy-zfs-module-check

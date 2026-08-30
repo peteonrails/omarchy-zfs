@@ -22,6 +22,8 @@ can never silently strip the ZFS layer.
 | `/usr/bin/omarchy-zfs-ensure-mkinitcpio` | **self-heal**: re-assert the `zfs` mkinitcpio hook |
 | `/usr/bin/omarchy-zfs-snapper-guard` | **self-heal**: drop stale non-btrfs snapper configs |
 | `/usr/bin/omarchy-zfs-bootorder-guard` | **self-heal**: keep ZFSBootMenu first in the EFI BootOrder |
+| `/usr/bin/omarchy-zfs-boot-mounts-setup` | opt pools into `zfs-mount-generator` so datasets mount and keys load at boot |
+| `/usr/bin/omarchy-zfs-module-check` | warn when an installed kernel has no built `zfs.ko` |
 | `/usr/bin/omarchy-zfs-hibernation-{setup,remove,available}` | ZFS zvol swap hibernation (**experimental**: setup works and the swap inherits pool encryption, but suspend-to-disk is untested here and OpenZFS discourages swap on a zvol) |
 | `/usr/bin/omarchy-bootstrap-zfs` | pool/dataset/ZBM bootstrap (installer/DR) |
 | `/usr/share/libalpm/hooks/00-zfs-autosnap.hook` | PreTransaction snapshot |
@@ -29,6 +31,7 @@ can never silently strip the ZFS layer.
 | `/usr/share/libalpm/hooks/zz-omarchy-zfs-ensure-mkinitcpio.hook` | PostTransaction self-heal |
 | `/usr/share/libalpm/hooks/zz-omarchy-zfs-snapper-guard.hook` | PostTransaction snapper self-heal |
 | `/usr/share/libalpm/hooks/zz-omarchy-zfs-bootorder-guard.hook` | PostTransaction BootOrder self-heal |
+| `/usr/share/libalpm/hooks/zz-omarchy-zfs-module-check.hook` | PostTransaction check that a ZFS module exists for every kernel |
 | `/usr/lib/systemd/system/omarchy-zfs-scrub.{service,timer}` | monthly scrub |
 | `/etc/zfsbootmenu/config.yaml.example`, `hooks/**` | ZBM reference config + branded unlock/theme |
 | `/etc/mkinitcpio.conf.d/zz-omarchy-zfs-hostid.conf` | keep `/etc/hostid` in every initramfs (static, not generated) |

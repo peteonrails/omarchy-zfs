@@ -1,0 +1,87 @@
+#!/bin/bash
+
+# omarchy:summary=Warn when an installed kernel has no built zfs.ko.
+# omarchy:requires-sudo=false
+#
+# A DKMS build failure is only a pacman WARNING. Nothing stops you rebooting
+# into a kernel with no zfs.ko, and the symptom lands far from the cause: on a
+# ZFS root the machine does not boot, and on a ZFS /home the greeter takes your
+# password and drops you straight back to the login screen.
+#
+# The usual cause is missing kernel headers. Neither zfs-dkms nor zfs-dkms-git
+# declares them (checked 2026-08-30: no depends, makedepends or optdepends entry
+# on either), and DKMS cannot know which kernel you intend to boot. So a system
+# with the headers stripped builds nothing and says nothing.
+#
+# This checks the other end: for every installed kernel, is there a module? It
+# only ever warns. A PostTransaction hook must not fail a transaction that has
+# already been committed, and the fix (install headers, rebuild) happens after.
+#
+# Invoked by:
+#   - zz-omarchy-zfs-module-check.hook (PostTransaction)
+#   - by hand, any time: omarchy-zfs-module-check
+
+set -uo pipefail
+
+# Same "is ZFS in use" test as omarchy-zfs-kernel-compat-check: a ZFS root, any
+# imported pool, or a DKMS zfs package installed. Deliberately broader than
+# "boots from ZFS", because ZFS on /home fails just as hard.
+zfs_in_use() {
+  [[ "$(findmnt -no FSTYPE / 2>/dev/null || true)" == "zfs" ]] && return 0
+  [[ -n "$(zpool list -H -o name 2>/dev/null)" ]] && return 0
+  local p
+  for p in zfs-dkms zfs-dkms-git; do
+    pacman -Qq "$p" &>/dev/null && return 0
+  done
+  return 1
+}
+zfs_in_use || exit 0
+
+# Which headers package goes with a kernel is decided by its pkgbase, which the
+# kernel package records. linux -> linux-headers, linux-lts -> linux-lts-headers.
+headers_for() {
+  local moddir="$1" pkgbase
+  if [[ -r "$moddir/pkgbase" ]]; then
+    pkgbase=$(< "$moddir/pkgbase")
+    printf '%s-headers' "$pkgbase"
+  else
+    printf 'the matching -headers package'
+  fi
+}
+
+missing=()
+for moddir in /usr/lib/modules/*/; do
+  # Skip stale module trees left behind by removed kernels.
+  [[ -e "$moddir/pkgbase" ]] || continue
+  kver=$(basename "$moddir")
+  if compgen -G "$moddir/updates/dkms/zfs.ko*" >/dev/null; then
+    continue
+  fi
+  # A prebuilt (non-DKMS) provider puts it elsewhere in the tree.
+  if find "$moddir" -name 'zfs.ko*' -print -quit 2>/dev/null | grep -q .; then
+    continue
+  fi
+  missing+=("$kver|$(headers_for "$moddir")")
+done
+
+(( ${#missing[@]} )) || exit 0
+
+{
+  echo
+  echo "omarchy-zfs: no ZFS module found for an installed kernel."
+  echo
+  for entry in "${missing[@]}"; do
+    kver="${entry%%|*}"; hdr="${entry##*|}"
+    echo "    kernel $kver has no zfs.ko"
+    echo "      install $hdr, then: sudo dkms autoinstall -k $kver"
+  done
+  echo
+  echo "  Until that succeeds, booting this kernel gives you no pools. On a ZFS"
+  echo "  root it will not boot. With ZFS on /home the login screen will look"
+  echo "  like it is rejecting a correct password."
+  echo
+  echo "  Check again with: omarchy-zfs-module-check"
+} >&2
+
+# Warn only. Never fail a committed transaction.
+exit 0
