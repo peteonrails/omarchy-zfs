@@ -199,6 +199,15 @@ else
   fi
   echo "Regenerating initramfs"
   "$(command -v /usr/bin/mkinitcpio || echo mkinitcpio)" -P
+  # mkinitcpio -P alone does not put the pool key back: which preset wins is
+  # locale-dependent (C collation sorts linux-zbm.preset before linux.preset),
+  # so the embed is an explicit step. omarchy-refresh-zbm does this on the
+  # branch above; without it here, a regen on this path silently costs the
+  # single-passphrase boot.
+  if command -v omarchy-zfs-embed-pool-key &>/dev/null; then
+    omarchy-zfs-embed-pool-key ||
+      echo "omarchy-zfs-ensure-mkinitcpio: could not embed the pool key (boot will prompt twice)" >&2
+  fi
   if command -v generate-zbm &>/dev/null; then
     echo "Regenerating ZFSBootMenu"
     generate-zbm
