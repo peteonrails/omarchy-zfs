@@ -13,6 +13,11 @@
 # rather than on every transaction: this only changes when one of those moves.
 # omarchy-zfs-module-check warns and always exits 0, because failing a
 # PostTransaction hook cannot un-commit the transaction that already ran.
+#
+# The kernel list is explicit for the same reason as the kernel guard: a
+# `linux-*` glob would fire on every linux-firmware bump. It must be kept in
+# step with 90-omarchy-zfs-kernel-guard.hook; a kernel missing from either one
+# is unguarded without saying so.
 
 [Trigger]
 Operation = Install
@@ -25,6 +30,16 @@ Target = linux-zen
 Target = linux-hardened
 Target = linux-rt
 Target = linux-rt-lts
+Target = linux-mainline
+Target = linux-cachyos
+# Omarchy's own kernels (pkgs.omarchy.org), as of 4.0.4
+Target = linux-omarchy
+Target = linux-omarchy-bore
+Target = linux-omarchy-muqss
+Target = linux-omarchy-ptl-novrr-mm
+Target = linux-ptl
+Target = linux-ptl-audio
+Target = linux-mainline-panther-lake
 Target = dkms
 Target = zfs-dkms
 Target = zfs-dkms-git

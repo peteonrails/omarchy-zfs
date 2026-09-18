@@ -3,6 +3,18 @@
 # (the kernel package's own 90-mkinitcpio-install.hook regenerates initramfs
 # without the ZFS module if zfs-dkms's Linux-Maximum is below the new kernel).
 #
+# The target list is explicit because there is no way to say "every kernel but
+# not linux-firmware": a `linux-*` glob fires on every firmware bump. Omarchy
+# 4.0.4 alone added five kernels (linux-omarchy and its bore/muqss/ptl-novrr-mm
+# variants, plus linux-mainline-panther-lake), none of which were covered here,
+# so a machine installing one got no check at all. Anything missing from this
+# list is silently unguarded, which is the worst failure mode available.
+#
+# NeedsTargets matters: it passes the triggering package names on stdin so the
+# check reads the version of the kernel actually being installed. Without it the
+# check looked up `linux` no matter which kernel triggered it, and cheerfully
+# approved a linux-omarchy 7.2.5 upgrade by reading stock linux 7.0.9.
+#
 # To bypass (only if you're recovering or know what you're doing):
 #   OMARCHY_SKIP_ZFS_KERNEL_CHECK=1 sudo -E pacman -Syu
 
@@ -14,10 +26,22 @@ Target = linux
 Target = linux-lts
 Target = linux-zen
 Target = linux-hardened
+Target = linux-rt
+Target = linux-rt-lts
+Target = linux-mainline
+Target = linux-cachyos
+# Omarchy's own kernels (pkgs.omarchy.org), as of 4.0.4
+Target = linux-omarchy
+Target = linux-omarchy-bore
+Target = linux-omarchy-muqss
+Target = linux-omarchy-ptl-novrr-mm
 Target = linux-ptl
+Target = linux-ptl-audio
+Target = linux-mainline-panther-lake
 
 [Action]
 Description = Verifying ZFS-on-ZBM kernel compatibility...
 When = PreTransaction
 Exec = /usr/bin/omarchy-zfs-kernel-compat-check candidate
+NeedsTargets
 AbortOnFail
