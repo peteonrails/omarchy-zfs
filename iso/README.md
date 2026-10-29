@@ -16,6 +16,12 @@ Host needs docker, git, and ~15GB free. Extra args pass through to upstream's
 `omarchy-iso-make` (e.g. `--no-cache`). Override the pin with
 `OMARCHY_ISO_UPSTREAM_REF=<ref>`.
 
+Use the rootful docker daemon. Upstream's build cache under
+`~/.cache/omarchy/iso_<channel>/` is root-owned, and a rootless container
+cannot replace a stale package there: pacman reports it as corrupted and the
+build dies before mkarchiso. If the account is not in the `docker` group, put a
+`docker` wrapper that runs `sudo -n /usr/bin/docker "$@"` first on `PATH`.
+
 ## What's different from the stock ISO
 
 | Change | Mechanism |
