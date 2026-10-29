@@ -171,9 +171,9 @@ sudo pacman -Sy omarchy-zfs
 ```
 
 `zfs` and `zfs-utils` resolve from any provider you already run (archzfs,
-zfs-dkms from the AUR, zfs-linux-lts). `sanoid` is AUR-only, so if you do not
-have it yet, run `yay -S omarchy-zfs` after adding the repo instead: yay takes
-omarchy-zfs from the repo and builds sanoid.
+zfs-dkms from the AUR, zfs-linux-lts). `sanoid` and `perl-config-inifiles`
+exist only in the AUR, so the repo mirrors them: built from pinned AUR
+commits by `dist/mirror.sh`, signed with the same key. No AUR helper needed.
 
 The package used to be on the AUR. It was removed in October 2026 because it
 requires Omarchy at runtime, and Omarchy itself ships only from a third-party
@@ -206,6 +206,11 @@ git tag -s vX.Y.Z && git push origin vX.Y.Z
 dist/publish.sh       # builds from the tag, signs, updates ../omarchy-zfs.com/repo
 git -C ../omarchy-zfs.com push
 ```
+
+`dist/mirror.sh` rebuilds the AUR-only dependencies listed in
+`dist/mirror/packages.txt` (name plus pinned AUR commit) in a throwaway Arch
+container and adds them to the repo. Bump a pin there to pick up a new
+upstream version.
 
 Packages and the repo database are signed with the release key
 `A38BB6838242C1A193FF7D481360E72C018F296D` (omarchy-zfs Release Signing). Its

@@ -26,26 +26,19 @@ while (( $# )); do
   esac
 done
 
-# Release signing key. The public half is embedded in bin/omarchy-bootstrap-zfs
-# (so an offline ISO install can trust the repo) and served from the site.
-key_fpr=A38BB6838242C1A193FF7D481360E72C018F296D
-repo_name=omarchy-zfs
-repo_dir="$site/repo/any"
-key_file="$site/repo/$repo_name.gpg"
+source dist/lib.sh
+repo_init "$site"
 
 pkgname=$(sed -n 's/^pkgname=//p' PKGBUILD)
 pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD)
 pkgrel=$(sed -n 's/^pkgrel=//p' PKGBUILD)
 tag="v$pkgver"
 
-[[ -d $repo_dir ]] || { echo "error: $repo_dir not found; pass --site" >&2; exit 1; }
 git rev-parse -q --verify "refs/tags/$tag" >/dev/null || {
   echo "error: tag $tag does not exist; tag the release first" >&2; exit 1; }
 [[ -z $(git status --porcelain) ]] || { echo "error: working tree not clean" >&2; exit 1; }
 [[ $(git rev-parse HEAD) == $(git rev-parse "$tag^{commit}") ]] || {
   echo "error: HEAD is not at $tag; a published build must match the tag" >&2; exit 1; }
-gpg --list-secret-keys "$key_fpr" >/dev/null 2>&1 || {
-  echo "error: release key $key_fpr not in the keyring" >&2; exit 1; }
 
 # The bootstrap embeds the public key; refuse to publish if it drifted.
 embedded_fpr=$(sed -n '/^-----BEGIN PGP PUBLIC KEY BLOCK-----/,/^-----END PGP PUBLIC KEY BLOCK-----/p' \
@@ -65,27 +58,11 @@ done
 [[ -n $pkgfile && -f $pkgfile.sig ]] || { echo "error: build or signature missing" >&2; exit 1; }
 
 echo ">>> updating repo at $repo_dir"
-# --remove drops the superseded package files so the directory holds one version.
-cp "$pkgfile" "$pkgfile.sig" "$repo_dir/"
-( cd "$repo_dir" && repo-add --sign --key "$key_fpr" --remove "$repo_name.db.tar.gz" "$pkgfile" )
-
-# repo-add writes the .db/.files names as symlinks. GitHub Pages serves a
-# symlink as a 404, so replace each with a copy of its target. It also leaves
-# .old backups of the previous databases, which git already keeps.
-for f in "$repo_dir/$repo_name".{db,files}{,.sig}; do
-  [[ -L $f ]] || continue
-  target=$(readlink -f "$f")
-  rm "$f" && cp "$target" "$f"
-done
-rm -f "$repo_dir"/*.old
-
-echo ">>> exporting public key to $key_file"
-gpg --armor --export "$key_fpr" > "$key_file"
+repo_add_packages "$pkgfile"
 
 if (( commit )); then
   echo ">>> committing in $site"
-  git -C "$site" add repo
-  git -C "$site" commit -S -m "Publish $pkgname $pkgver-$pkgrel"
+  repo_commit "Publish $pkgname $pkgver-$pkgrel"
   echo ">>> done. Push $site to deploy, and push the $tag tag here."
 else
   echo ">>> --no-commit: changes left staged-free in $site"

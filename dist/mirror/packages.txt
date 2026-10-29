@@ -1,0 +1,6 @@
+# AUR packages mirrored into the omarchy-zfs repo so `pacman -S omarchy-zfs`
+# resolves without an AUR helper. One per line: <name> <AUR git commit>.
+# Bump the commit deliberately; dist/mirror.sh builds exactly what is pinned.
+# Order matters: a package's dependencies must be listed first.
+perl-config-inifiles e5099a8286dd26d010ae13e173a4da4fcb46f94b
+sanoid 3b344eb1b0a71839553459ea8661d7a64ca52505
