@@ -42,44 +42,36 @@ iso/build.sh    # anchored edits fail loudly if upstream restructured
 
 ## Status / validation
 
-Validated in QEMU (UEFI, virtio) on 2026-08-18:
+Each published image goes through an untouched run in QEMU (UEFI, virtio,
+fresh disk, fresh NVRAM, no manual repair) ending at a logged-in desktop.
+Last run: the 2026.10.29 image, 2026-10-29. Bootstrap completed hands-off in
+under ten minutes; ZFSBootMenu prompted once; SDDM accepted the same
+passphrase; Quattro Hyprland desktop came up.
 
 - [x] Build completes, and fails the build if `zfs.ko` is missing from the live airootfs
 - [x] Live ISO boots; `zpool` works in the live environment
 - [x] ZFS install end-to-end: wizard → offline pacstrap of full Omarchy → ZBM →
       passphrase → kexec → initramfs → encrypted ZFS root → systemd → SDDM → desktop
 - [x] Encrypted whole-pool install (native ZFS encryption, no LUKS/LVM)
-- [ ] Untouched run on an image carrying every fix (no mid-install patching)
-- [ ] Login password matches the pool passphrase on a fresh install
-- [ ] Single passphrase prompt (see Known issues)
+- [x] Untouched run on an image carrying every fix (no mid-install patching)
+- [x] Login password matches the pool passphrase on a fresh install
+- [x] Single passphrase prompt (pool key embedded in the in-pool initramfs,
+      verified absent from the ESP image)
 - [ ] Stock btrfs install still works from this ISO
 - [ ] Hibernation on a zvol swap
 
 ### Known issues
 
-- **The initramfs passphrase prompt rejects a correct passphrase.** This is the
-  one blocker. ZFSBootMenu unlocks the pool with the passphrase, kexecs, and then
-  the target's initramfs prompts again and answers `Incorrect key provided` for
-  the *same* string — which unlocks the pool without complaint from a live system
-  or the host (verified both with and without a trailing newline, and with
-  `keylocation` set to `prompt` rather than a keyfile). Everything outside the
-  initramfs agrees on the key; only the initramfs disagrees.
-
-  Prime suspect: the ISO builds ZFS from **git master** (`zfs-dkms-git` /
-  `zfs-utils-git`, currently 2.4.99), so the initramfs carries master's userspace.
-  archzfs's release packages lag current kernels, which is why git was chosen —
-  that tradeoff needs revisiting. Next steps, cheapest first: reproduce the prompt
-  in the live ISO (`zfs load-key -L prompt` there, same binaries) to confirm it is
-  the userspace and not the console; if confirmed, pin a release ZFS for the
-  target; independently, make `org.zfsbootmenu:keysource` actually inject the key
-  so there is only one prompt at all. Embedding the key via `FILES+=` also works
-  but must never reach the ESP's UKI.
-- **No journal storage** was observed on an install whose ZFS units were disabled;
-  enabling them (now done at install time) should restore persistent logs — verify.
-- **SDDM ships no `/var/lib/sddm/state.conf`**, so the password-only Omarchy theme
-  has no user selected. Writing `[Last] User=…` makes the greeter usable.
-
-The ZFS install path reuses `bin/omarchy-bootstrap-zfs`, whose stage 15 was
-rewritten for Quattro (packages + `omarchy-apply-system` +
-`omarchy-provision-user`) in this change and needs the VM validation pass
-above before any release.
+- **`generate-zbm` output name.** ZFSBootMenu 3.1.0 writes
+  `/boot/efi/EFI/zbm/vmlinuz-linux.EFI` (named after the kernel), while the
+  bootstrap looks for `vmlinuz.EFI`, so it reports the generated image missing
+  and installs the bundled prebuilt EFI instead. Boot works either way; the
+  branded hooks from the package are only in the generated image. Seen on the
+  2026.10.29 run.
+- **Upstream drift.** `omarchy-iso` has moved far past the pin in
+  `UPSTREAM_REF` and rewrote `builder/build-iso.sh`; the `# Build the ISO.`
+  anchor no longer exists at upstream HEAD. Re-pinning means re-porting the
+  overlay. Packages still come fresh from the Omarchy mirrors at build time,
+  so the old pin produces a current Omarchy.
+- **SDDM user selection** is handled at install time by writing
+  `/var/lib/sddm/state.conf` with the created user.
