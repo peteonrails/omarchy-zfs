@@ -157,19 +157,30 @@ should tolerate `create-config` failing.
 
 ## Install
 
-From the [AUR](https://aur.archlinux.org/packages/omarchy-zfs):
+From the project's pacman repo. Trust the release key, add the repo, install:
 
 ```sh
-yay -S omarchy-zfs    # or paru, or makepkg from a manual AUR clone
+curl -fsSL https://omarchy-zfs.com/repo/omarchy-zfs.gpg | sudo pacman-key --add -
+sudo pacman-key --lsign-key A38BB6838242C1A193FF7D481360E72C018F296D
+sudo tee -a /etc/pacman.conf >/dev/null <<'EOF'
+
+[omarchy-zfs]
+Server = https://omarchy-zfs.com/repo/any
+EOF
+sudo pacman -Sy omarchy-zfs
 ```
 
-Note: `omarchy` is **not** a pacman dependency, deliberately. It ships only from
-`pkgs.omarchy.org`, so it is satisfiable from neither the official repos nor the
-AUR, and declaring it made this package unbuildable in a clean chroot. You still
-need Omarchy: the install scriptlet checks for it and tells you if it is missing.
+`zfs` and `zfs-utils` resolve from any provider you already run (archzfs,
+zfs-dkms from the AUR, zfs-linux-lts). `sanoid` is AUR-only, so if you do not
+have it yet, run `yay -S omarchy-zfs` after adding the repo instead: yay takes
+omarchy-zfs from the repo and builds sanoid.
 
-(There used to be an unrelated third-party package named `omarchy` in the AUR.
-It has since been removed.)
+The package used to be on the AUR. It was removed in October 2026 because it
+requires Omarchy at runtime, and Omarchy itself ships only from a third-party
+repo, so the package does not work on vanilla Arch. `omarchy` is still **not**
+a pacman dependency of this package: it is unsatisfiable from the official
+repos, and declaring it broke clean-chroot builds. The install scriptlet
+checks for it and tells you if it is missing.
 
 ## Build from source
 
@@ -188,12 +199,19 @@ built without forking upstream. See [`iso/README.md`](iso/README.md).
 iso/build.sh    # → iso/out/omarchy-zfs-*.iso   (needs docker, ~15GB)
 ```
 
-## Releasing to the AUR
+## Releasing
 
 ```sh
 git tag -s vX.Y.Z && git push origin vX.Y.Z
-aur/release.sh        # derives the AUR PKGBUILD, test-builds, pushes
+dist/publish.sh       # builds from the tag, signs, updates ../omarchy-zfs.com/repo
+git -C ../omarchy-zfs.com push
 ```
+
+Packages and the repo database are signed with the release key
+`A38BB6838242C1A193FF7D481360E72C018F296D` (omarchy-zfs Release Signing). Its
+public half is served at https://omarchy-zfs.com/repo/omarchy-zfs.gpg and
+embedded in `bin/omarchy-bootstrap-zfs` so offline ISO installs can trust the
+repo without a network.
 
 ## Status
 

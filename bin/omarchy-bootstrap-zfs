@@ -1003,6 +1003,30 @@ stage_efi_boot_entry() {
 
 readonly OMARCHY_GPG_KEY="40DFB630FF42BCFFB047046CF0134EE680CAC571"
 
+# The omarchy-zfs repo's release key. Embedded rather than fetched so an
+# offline ISO install can trust the repo it will update from later; the same
+# key is served at https://omarchy-zfs.com/repo/omarchy-zfs.gpg and checked
+# against this copy by dist/publish.sh.
+readonly OMARCHY_ZFS_GPG_KEY="A38BB6838242C1A193FF7D481360E72C018F296D"
+readonly OMARCHY_ZFS_GPG_PUBKEY='
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEauOtNRYJKwYBBAHaRw8BAQdAedTZtLHxGp9DgVCCJMHU4ujnWhpvhqHax0Qu
+WhI5Dfy0Pm9tYXJjaHktemZzIFJlbGVhc2UgU2lnbmluZyA8cGV0ZStvbWFyY2h5
+LXpmc0BwZXRlb25yYWlscy5jb20+iJYEExYKAD4WIQSji7aDgkLBoZP/fUgTYOcs
+AY8pbQUCauOtNQIbAwUJB4TOAAULCQgHAgYVCgkICwIEFgIDAQIeAQIXgAAKCRAT
+YOcsAY8pbYoZAQDxyEOALTbfvDhW4H6hWXjnhQE1grVcJTZKf8lk03vAywD/ZsbC
+q36+Vx2IzwcdiZ0/Md+oIbGF0l5aUyJn6V9ZNgQ=
+=Iuvo
+-----END PGP PUBLIC KEY BLOCK-----'
+
+trust_omarchy_zfs_repo_key() {
+  printf '%s\n' "$OMARCHY_ZFS_GPG_PUBKEY" > "$MNT/tmp/omarchy-zfs.gpg"
+  arch-chroot "$MNT" pacman-key --add /tmp/omarchy-zfs.gpg
+  arch-chroot "$MNT" pacman-key --lsign-key "$OMARCHY_ZFS_GPG_KEY"
+  rm -f "$MNT/tmp/omarchy-zfs.gpg"
+}
+
 stage_run_omarchy_install() {
   if (( DRY_RUN )); then
     log "would install omarchy + omarchy-zfs and run apply-system/provision-user in chroot"
@@ -1021,13 +1045,13 @@ EOF
       arch-chroot "$MNT" pacman-key --lsign-key "$OMARCHY_GPG_KEY" 2>/dev/null || true
     fi
     if ! grep -q '^\[omarchy-zfs\]' "$MNT/etc/pacman.conf"; then
-      # omarchy-zfs is AUR-source; the project serves a small unsigned binary
-      # repo so a chroot install needs no makepkg. Verifiable: same content as
-      # https://aur.archlinux.org/packages/omarchy-zfs.
+      # The project's signed pacman repo: the package's only distribution
+      # channel since it left the AUR. Trust its key first so pacman's default
+      # SigLevel applies.
+      trust_omarchy_zfs_repo_key
       cat <<'EOF' >> "$MNT/etc/pacman.conf"
 
 [omarchy-zfs]
-SigLevel = Optional TrustAll
 Server = https://omarchy-zfs.com/repo/any
 EOF
     fi
