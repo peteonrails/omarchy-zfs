@@ -51,6 +51,20 @@ it to our own `zz-omarchy-zfs.conf` drop-in (which sorts after — and therefore
 overrides — `omarchy_hooks.conf`), and regenerates the initramfs + ZBM. Upstream
 hook additions are inherited automatically; we only guarantee `zfs` placement.
 
+## Keeping the pool key off the ESP
+
+The pool key may only live in the initramfs inside the encrypted pool. The
+`omarchy-on-zfs` fork wrote `/etc/mkinitcpio.conf.d/omarchy_zfs_keys.conf`,
+which added the key to *every* initramfs, including Omarchy's limine UKIs on
+the unencrypted ESP. On a machine migrated from the fork, anyone holding the
+disk could pull the root pool key out of the UKI.
+
+`omarchy-zfs-ensure-mkinitcpio` removes that drop-in when it is unowned and
+holds nothing but keyfile lines. `omarchy-refresh-zbm` then checks the ESP for
+every pool's keyfile, looking inside each UKI's compressed `.initrd` as well as
+at raw files, and rebuilds the limine images if one still carries a key. If the
+key was ever on your ESP, treat it as exposed and change the pool passphrase.
+
 ## The hostid guarantee
 
 ZFS records the creating host's hostid in the pool label and refuses to import

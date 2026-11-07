@@ -45,6 +45,21 @@ fi
 STOCK="$CONFD/omarchy_hooks.conf"
 OURS="$CONFD/zz-omarchy-zfs.conf"
 
+# The omarchy-on-zfs fork wrote omarchy_zfs_keys.conf, a drop-in adding the
+# pool keyfile to FILES for every initramfs. The keyed image ZBM boots is now
+# built from the standalone config below, so the drop-in adds nothing there.
+# What it does do is put the key into Omarchy's limine UKIs, which live on the
+# unencrypted ESP: on a machine migrated from the fork, every UKI carried the
+# root pool key. Remove it, but only while it is unowned and holds nothing but
+# keyfile lines, so a file someone wrote for another purpose is left alone.
+LEGACY_KEYS="$CONFD/omarchy_zfs_keys.conf"
+if [[ -f $LEGACY_KEYS ]] && ! pacman -Qo "$LEGACY_KEYS" &>/dev/null &&
+   ! grep -qvE '^[[:space:]]*(#.*)?$|^FILES\+=\(/etc/zfs/keys/[^)]*\)$' "$LEGACY_KEYS"; then
+  rm -f "$LEGACY_KEYS"
+  echo "omarchy-zfs-ensure-mkinitcpio: removed legacy $LEGACY_KEYS (it put the pool key on the ESP)"
+  OMARCHY_ZFS_FORCE_REGEN=1
+fi
+
 # Derive the EFFECTIVE hooks by evaluating the config chain exactly the way
 # mkinitcpio does: main conf, then conf.d drop-ins in sort order, skipping our
 # own. Never text-scrape a HOOKS= line: omarchy_hooks.conf contains a second,

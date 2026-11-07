@@ -7,6 +7,8 @@
 # An mkinitcpio -P run without a working zfs.ko produces an unbootable initramfs.
 omarchy-zfs-kernel-compat-check installed || exit 1
 
+status=0
+
 echo "Rebuilding initramfs"
 sudo "$(command -v /usr/bin/mkinitcpio || echo mkinitcpio)" -P
 
@@ -24,27 +26,61 @@ if command -v generate-zbm &>/dev/null; then
   sudo generate-zbm
 fi
 
-# The in-pool initramfs may embed the pool keyfile so the kexec'd kernel can
+# The in-pool initramfs may embed a pool keyfile so the kexec'd kernel can
 # unlock without a second passphrase prompt. That is safe only while the key
-# stays inside the encrypted pool — the ESP is unencrypted and anyone with the
+# stays inside the encrypted pool. The ESP is unencrypted and anyone with the
 # disk can read it. Verify, loudly, on every refresh.
-keyfile=$(zpool list -H -o name 2>/dev/null | while read -r p; do
-            loc=$(zfs get -H -o value keylocation "$p" 2>/dev/null)
-            [[ $loc == file://* ]] && { echo "${loc#file://}"; break; }
-          done)
-if [[ -n $keyfile && -r $keyfile ]] && command -v findmnt &>/dev/null; then
-  esp=$(findmnt -n -o TARGET -t vfat | head -1)
-  if [[ -n $esp ]]; then
-    # Match the embedded PATH (cpio archives store member names verbatim),
-    # never the key bytes: a short passphrase occurs by chance inside
-    # unrelated EFI binaries and flagged limine as a leak.
-    leaked=$(sudo grep -rlF "${keyfile#/}" "$esp" 2>/dev/null | head -3)
-    if [[ -n $leaked ]]; then
-      echo "omarchy-refresh-zbm: SECURITY — the pool key appears on the unencrypted ESP:" >&2
-      printf '  %s\n' $leaked >&2
-      echo "  Remove those images, then rebuild. The key belongs only in /boot inside the pool." >&2
-      exit 1
-    fi
-    echo "Verified: pool key is not present on the ESP"
+#
+# Every file:// keylocation counts, not just the root pool's: a data pool's
+# key on the ESP is just as readable.
+mapfile -t keyfiles < <(zfs get -H -o value keylocation 2>/dev/null |
+                        sed -n 's|^file://||p' | sort -u)
+
+# Match the embedded PATH, never the key bytes: a short passphrase occurs by
+# chance inside unrelated EFI binaries and flagged limine as a leak. A raw grep
+# catches an uncompressed copy, but a UKI carries its initramfs compressed in
+# an .initrd section, which a grep cannot see into. Omarchy's limine UKIs are
+# exactly that, and a legacy drop-in from the omarchy-on-zfs fork put the root
+# pool key in every one of them. So list each UKI's initramfs as well.
+esp_leaks() {
+  local esp f tmp
+  tmp=$(mktemp)
+  for esp in $(findmnt -n -o TARGET -t vfat); do
+    for kf in "${keyfiles[@]}"; do
+      sudo grep -rlF "${kf#/}" "$esp" 2>/dev/null
+    done
+    command -v objcopy &>/dev/null || continue
+    while IFS= read -r -d '' f; do
+      sudo objcopy -O binary --only-section=.initrd "$f" "$tmp" 2>/dev/null || continue
+      [[ -s $tmp ]] || continue
+      for kf in "${keyfiles[@]}"; do
+        sudo lsinitcpio -l "$tmp" 2>/dev/null | grep -qx "${kf#/}" && echo "$f"
+      done
+    done < <(sudo find "$esp" -iname '*.efi' -print0 2>/dev/null)
+  done | sort -u
+  sudo rm -f "$tmp"
+}
+
+if (( ${#keyfiles[@]} )) && command -v findmnt &>/dev/null; then
+  leaked=$(esp_leaks)
+
+  # A leak in Omarchy's UKIs comes from the config chain they are built from.
+  # omarchy-zfs-ensure-mkinitcpio removes the legacy drop-in that caused it, so
+  # rebuild them once and look again before calling it a failure.
+  if [[ -n $leaked ]] && command -v limine-mkinitcpio &>/dev/null; then
+    echo "The pool key is in a boot image on the ESP; rebuilding the Limine images without it"
+    sudo limine-mkinitcpio
+    leaked=$(esp_leaks)
   fi
+
+  if [[ -n $leaked ]]; then
+    echo "omarchy-refresh-zbm: SECURITY — a pool key appears on the unencrypted ESP:" >&2
+    printf '  %s\n' $leaked >&2
+    echo "  Find what puts it there (a FILES+= line in /etc/mkinitcpio.conf.d), remove" >&2
+    echo "  those images, then rebuild. The key belongs only in /boot inside the pool." >&2
+    exit 1
+  fi
+  echo "Verified: no pool key is present on the ESP"
 fi
+
+exit $status
