@@ -1112,10 +1112,27 @@ q36+Vx2IzwcdiZ0/Md+oIbGF0l5aUyJn6V9ZNgQ=
 -----END PGP PUBLIC KEY BLOCK-----'
 
 trust_omarchy_zfs_repo_key() {
-  printf '%s\n' "$OMARCHY_ZFS_GPG_PUBKEY" > "$MNT/tmp/omarchy-zfs.gpg"
-  arch-chroot "$MNT" pacman-key --add /tmp/omarchy-zfs.gpg
+  # Not under /tmp: arch-chroot mounts a fresh tmpfs there, so a key written
+  # to $MNT/tmp is gone by the time pacman-key looks (the 4.5 ISO's untouched
+  # run died on it).
+  printf '%s\n' "$OMARCHY_ZFS_GPG_PUBKEY" > "$MNT/root/omarchy-zfs.gpg"
+  arch-chroot "$MNT" pacman-key --add /root/omarchy-zfs.gpg
   arch-chroot "$MNT" pacman-key --lsign-key "$OMARCHY_ZFS_GPG_KEY"
-  rm -f "$MNT/tmp/omarchy-zfs.gpg"
+  rm -f "$MNT/root/omarchy-zfs.gpg"
+}
+
+# The project's signed pacman repo: the package's only distribution channel
+# since it left the AUR. Offline installs need it too, or they never see an
+# omarchy-zfs update. Trusting the key needs no network, since the public half
+# is embedded here. Idempotent.
+add_omarchy_zfs_repo() {
+  grep -q '^\[omarchy-zfs\]' "$MNT/etc/pacman.conf" && return 0
+  trust_omarchy_zfs_repo_key
+  cat <<'EOF' >> "$MNT/etc/pacman.conf"
+
+[omarchy-zfs]
+Server = https://omarchy-zfs.com/repo/any
+EOF
 }
 
 stage_run_omarchy_install() {
@@ -1135,17 +1152,10 @@ EOF
       arch-chroot "$MNT" pacman-key --recv-keys "$OMARCHY_GPG_KEY" 2>/dev/null || true
       arch-chroot "$MNT" pacman-key --lsign-key "$OMARCHY_GPG_KEY" 2>/dev/null || true
     fi
-    if ! grep -q '^\[omarchy-zfs\]' "$MNT/etc/pacman.conf"; then
-      # The project's signed pacman repo: the package's only distribution
-      # channel since it left the AUR. Trust its key first so pacman's default
-      # SigLevel applies.
-      trust_omarchy_zfs_repo_key
-      cat <<'EOF' >> "$MNT/etc/pacman.conf"
+  fi
 
-[omarchy-zfs]
-Server = https://omarchy-zfs.com/repo/any
-EOF
-    fi
+  if ! (( OFFLINE )); then
+    add_omarchy_zfs_repo
     say "Installing Omarchy + ZFS layer packages"
     run arch-chroot "$MNT" pacman -Sy --noconfirm omarchy omarchy-zfs
   fi
@@ -1198,6 +1208,11 @@ EOF
   if ! (( DRY_RUN )); then
     rm -rf "$MNT/opt/packages"
   fi
+
+  # After omarchy-apply-system, for every install: its post-install step
+  # rewrites /etc/pacman.conf from Omarchy's channel templates and drops a
+  # repo added before it (the 4.5 ISO's untouched run had the key, no repo).
+  add_omarchy_zfs_repo
 
   # Deterministic initramfs pass: hooks inside pacstrap have gates of their
   # own (the kernel compat check vetoed -P on META grounds in validation), so
