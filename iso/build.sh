@@ -32,7 +32,10 @@ if [[ ! -d $work/.git ]]; then
   git clone "$upstream_url" "$work"
 fi
 git -C "$work" fetch origin
-git -C "$work" checkout --detach "$ref"
+# The checkout carries the previous build's anchored edits. It is ours and
+# re-patched below every run, so a re-pin must discard them, or git refuses
+# to switch commits.
+git -C "$work" checkout --force --detach "$ref"
 git -C "$work" reset --hard "$ref"
 git -C "$work" clean -fdx
 
@@ -65,19 +68,24 @@ EOF
 
 # 2. build-iso.sh: run our injector right before mkarchiso (after the offline
 #    mirror is assembled and the airootfs pacman.conf is in place).
+#    Since 4.5 the comment runs on ("# Build the ISO. profiledef.sh reads
+#    OMARCHY_ARCH ..."), so match the line by its prefix, and insist on
+#    exactly one. By this point upstream has pruned its offline mirror and
+#    copied pacman-offline.conf into the live root, so neither undoes ours.
 anchor='# Build the ISO.'
-grep -qxF "$anchor" "$work/builder/build-iso.sh" || {
-  echo "ERROR: anchor '$anchor' not found in upstream build-iso.sh — upstream moved; re-pin and adjust." >&2
+[[ $(grep -c '^# Build the ISO\.' "$work/builder/build-iso.sh") == 1 ]] || {
+  echo "ERROR: anchor '$anchor' not found exactly once in upstream build-iso.sh — upstream moved; re-pin and adjust." >&2
   exit 1
 }
-sed -i "s|^# Build the ISO\.\$|bash /builder/build-zfs-packages.sh \"\$build_cache_dir\"\n\n# Build the ISO.|" \
+sed -i '/^# Build the ISO\./i bash /builder/build-zfs-packages.sh "$build_cache_dir"\n' \
   "$work/builder/build-iso.sh"
 
 #    ...and hard-verify the zfs module after mkarchiso: the dkms hook only
 #    WARNS when the module fails to compile against the live kernel, and a
 #    live env without zfs.ko must never ship (observed with archzfs's
-#    zfs 2.3.3 vs linux-t2 7.1.8).
-anchor3='mkarchiso -v -w "$build_cache_dir/work/" -o /out/ "$build_cache_dir/"'
+#    zfs 2.3.3 vs linux-t2 7.1.8). The live kernel is linux-omarchy since
+#    4.5, so that is the module tree that has to have it.
+anchor3='"$mkarchiso_command" -v -w "$build_cache_dir/work/" -o /out/ "$build_cache_dir/"'
 grep -qF "$anchor3" "$work/builder/build-iso.sh" || {
   echo "ERROR: mkarchiso anchor not found in upstream build-iso.sh — upstream moved; re-pin and adjust." >&2
   exit 1
@@ -85,11 +93,11 @@ grep -qF "$anchor3" "$work/builder/build-iso.sh" || {
 cat >> "$work/builder/build-iso.sh" <<'EOF'
 
 # [zfs] fail the build if the live env has no zfs kernel module
-if ! ls "$build_cache_dir"/work/x86_64/airootfs/usr/lib/modules/*/updates/dkms/zfs.ko* >/dev/null 2>&1; then
-  echo "ERROR: [zfs] no zfs.ko in the live airootfs — the dkms build failed (check the dkms warnings above)" >&2
+if ! ls "$build_cache_dir"/work/x86_64/airootfs/usr/lib/modules/*-omarchy/updates/dkms/zfs.ko* >/dev/null 2>&1; then
+  echo "ERROR: [zfs] no zfs.ko for linux-omarchy in the live airootfs — the dkms build failed (check the dkms warnings above)" >&2
   exit 1
 fi
-echo ">>> [zfs] verified: zfs kernel module present in live airootfs"
+echo ">>> [zfs] verified: zfs kernel module present for linux-omarchy in live airootfs"
 EOF
 
 # 3. .automated_script.sh: offer the ZFS path ahead of the stock configurator.
@@ -108,9 +116,13 @@ anchor = "if /usr/local/bin/omarchy-cidata-load; then"
 zfs_offer = """# omarchy-zfs: offer the root-on-ZFS + ZFSBootMenu install path. Unattended
 # media always carry a cidata drive, so skip the offer instantly for them;
 # an interactive boot has a human and waits for an answer (a 15s timeout
-# cost a real user their choice in validation).
+# cost a real user their choice in validation). Only offer it when the booted
+# kernel has a zfs module: ZFS is built for linux-omarchy, and a Mac boots
+# linux-t2 instead.
 if lsblk -no LABEL 2>/dev/null | grep -qx cidata; then
   : # autoinstall drive present — stock unattended flow untouched
+elif ! modinfo zfs >/dev/null 2>&1; then
+  : # no zfs module for this live kernel — stock flow only
 elif gum confirm --default=false "Install with root-on-ZFS + ZFSBootMenu (experimental)?"; then
   exec /usr/local/bin/omarchy-zfs-install
 fi

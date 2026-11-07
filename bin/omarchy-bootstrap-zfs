@@ -641,6 +641,60 @@ stage_mount_filesystems() {
 # archzfs's own packaging) and remains configured for future updates.
 # ============================================================================
 
+# Omarchy 4.5's ISO carries the invariant target system (~900 packages, the
+# kernel included) as a packed btrfs filesystem image, and its offline mirror
+# ships only the packages that image does not hold. The stock installer writes
+# the image onto a btrfs partition. A ZFS root cannot take a btrfs image, so
+# write it onto a temporary zvol in the new pool, mount its one subvolume
+# read-only, and copy that into the root dataset. The datasets already mounted
+# under $MNT (home, var/log, ...) receive their part of the tree.
+ROOT_IMAGE_DIR="/run/archiso/bootmnt/arch/$(uname -m)"
+install_root_image() {
+  local image=$1
+  local zvol="$POOL_NAME/omarchy-root-image"
+  local dev="/dev/zvol/$zvol" src=/tmp/omarchy-root-image rc=0
+  say "Copying Omarchy's root image into $DATASET_ROOT (several GB, a few minutes)"
+  if (( DRY_RUN )); then
+    log "would write $image to $zvol, mount it read-only and copy it into $MNT"
+    return 0
+  fi
+  # Sparse: only written blocks cost anything. Uncompressed, because the
+  # btrfs inside is already zstd-compressed.
+  zfs list -H -o name "$zvol" &>/dev/null && zfs destroy "$zvol"
+  zfs create -s -V 32G -o compression=off "$zvol"
+  udevadm settle
+  for _ in $(seq 1 20); do [[ -b $dev ]] && break; sleep 0.5; done
+  [[ -b $dev ]] || die "zvol $dev did not appear"
+
+  # Exit 2 means the writer refused the image; upstream's fallback then is a
+  # plain stream decode, which reads the same zstd frames.
+  omarchy-image-write write "$image" "$dev" || rc=$?
+  if (( rc == 2 )); then
+    zstdcat "$image" | dd of="$dev" bs=4M conv=fsync status=none
+  elif (( rc != 0 )); then
+    die "omarchy-image-write failed ($rc) writing the root image"
+  fi
+
+  mkdir -p "$src"
+  # The image's one subvolume (ROOT_IMAGE_SUBVOLUME in the orchestrator).
+  mount -o ro,subvol=omarchy-root "$dev" "$src" ||
+    die "could not mount the root image's omarchy-root subvolume"
+  # -a keeps owners, modes, hardlinks, ACLs, xattrs (file capabilities live
+  # there) and timestamps.
+  cp -a "$src/." "$MNT/" || { umount "$src"; die "copying the root image failed"; }
+  umount "$src"
+  zfs destroy "$zvol"
+
+  # The copy lands after stage_pacstrap installed /etc/hostid. It must match
+  # the pool or the first initramfs cannot import it, so put it back.
+  install -Dm644 /etc/hostid "$MNT/etc/hostid"
+
+  # The image's fstab describes a btrfs root. stage_fstab appends ours.
+  printf '%s\n' '# Static information about the filesystems.' \
+    '# See fstab(5) for details.' '' \
+    '# <file system> <dir> <type> <options> <dump> <pass>' >"$MNT/etc/fstab"
+}
+
 stage_pacstrap() {
   # The target's initramfs is generated during this transaction (via the
   # kernel's hook — and, when omarchy-zfs is in the list, our ensure-
@@ -662,16 +716,16 @@ stage_pacstrap() {
     # (ensure-mkinitcpio, snapper guard) fire inside the target immediately,
     # so the very first initramfs already carries the zfs hook.
     #
-    # Kernel: stock `linux` + zfs-dkms-git, matching Omarchy proper and the
-    # ISO's own live env. archzfs's prebuilt zfs-linux-lts pins an exact
-    # kernel Arch rotates out too fast to bake into an ISO, and even its
-    # zfs-dkms release lags current kernels; the git snapshot (built into the
-    # ISO's [zfs-offline] mirror) tracks them. The omarchy-zfs kernel guard
-    # prevents future skew.
+    # Kernel: linux-omarchy, the kernel Omarchy 4.5 installs and makes the
+    # default, with zfs-dkms + zfs-utils built into the ISO's [zfs-offline]
+    # mirror. OpenZFS 2.4.4 is the first release that builds for its 7.2
+    # series. archzfs cannot supply either: its zfs-linux-lts pins a kernel
+    # Arch rotated out long ago, and its zfs-dkms is 2.3.3. The omarchy-zfs
+    # kernel guard prevents future skew.
     # zfsbootmenu: the generator, so stage_install_zbm can build a branded,
     # feature-matched ZBM image locally instead of shipping the vanilla
     # prebuilt EFI (no first-boot branding follow-up).
-    pkgs+=(linux linux-headers zfs-dkms-git zfs-utils-git zfsbootmenu omarchy omarchy-zfs)
+    pkgs+=(linux-omarchy linux-omarchy-headers zfs-dkms zfs-utils zfsbootmenu omarchy omarchy-zfs)
 
     # The full Omarchy base manifest, not just the meta-package's dependency
     # closure: things like docker live only in the package list, and
@@ -692,12 +746,33 @@ stage_pacstrap() {
     say "pacstrap (≈3 min — prebuilt packages, no DKMS build)"
   fi
 
-  run pacstrap -K "$MNT" "${pkgs[@]}"
+  local image="$ROOT_IMAGE_DIR/omarchy-root.img.zst"
+  if (( OFFLINE )) && [[ -r $image ]]; then
+    # Omarchy 4.5+ ISO: start from its root image, like the stock installer.
+    install_root_image "$image"
+    # Then pacstrap only what the image lacks, as the stock installer's delta
+    # does (pacman -T against the target's own db). Asking pacstrap for
+    # packages the image already holds would reinstall them, and their files
+    # are not on the ISO: the shipped mirror leaves out everything the image
+    # contains. That is how the first 4.5 build failed, on linux-omarchy.
+    local missing rc=0
+    missing=$(pacman -T --root "$MNT" --dbpath "$MNT/var/lib/pacman" "${pkgs[@]}") || rc=$?
+    (( rc == 0 || rc == 127 )) || die "pacman -T could not read the target's package database"
+    if [[ -n $missing ]]; then
+      mapfile -t pkgs <<<"$missing"
+      say "pacstrap what the root image lacks: ${pkgs[*]}"
+      run pacstrap "$MNT" "${pkgs[@]}"
+    fi
+  else
+    run pacstrap -K "$MNT" "${pkgs[@]}"
+  fi
 
-  # Mirror the ISO's archzfs repo configuration into the chroot so future
-  # `pacman -Syu` runs there pull paired linux-lts + zfs-linux-lts updates
-  # from archzfs as they're published.
-  if ! grep -q '^\[archzfs\]' "$MNT/etc/pacman.conf"; then
+  # Mirror the archzfs LTS ISO's repo configuration into the chroot so future
+  # `pacman -Syu` runs there pull paired linux-lts + zfs-linux-lts updates.
+  # Only on that path: an offline install runs linux-omarchy with zfs-dkms
+  # from the AUR, and a stale [archzfs] there only shadows it (its zfs-dkms is
+  # 2.3.3, and pacman and yay both prefer a repo copy over the AUR).
+  if (( ! OFFLINE )) && ! grep -q '^\[archzfs\]' "$MNT/etc/pacman.conf"; then
     if (( DRY_RUN )); then
       log "would configure archzfs repo in chroot"
     else
@@ -1199,9 +1274,10 @@ Next:
 
 $(if (( OFFLINE )); then
   cat <<'KERNEL'
-Kernel + ZFS: linux with zfs-dkms-git. The omarchy-zfs kernel guard blocks
-any kernel upgrade the ZFS module can't build against, so `omarchy update`
-stays boot-safe.
+Kernel + ZFS: linux-omarchy with zfs-dkms. The omarchy-zfs kernel guard
+blocks any kernel upgrade the ZFS module can't build against, so
+`omarchy update` stays boot-safe. Update ZFS with:
+  yay -S aur/zfs-dkms aur/zfs-utils
 KERNEL
 else
   cat <<'KERNEL'
