@@ -1262,12 +1262,20 @@ stage_finalize() {
     # Single-prompt unlock depends on the pool key being inside the in-pool
     # image. Not fatal (the boot still works, you just get a second prompt),
     # but say so plainly rather than letting the user discover it at boot.
+    # Every staged image, not initramfs-linux.img by name: a linux-omarchy
+    # install has no such file, and the check reported a missing key that was
+    # there (first 4.5 VM run).
     if [[ $(zfs get -H -o value keylocation "$POOL_NAME" 2>/dev/null) == file://* ]]; then
-      if arch-chroot "$MNT" lsinitcpio -l /boot/initramfs-linux.img 2>/dev/null |
-           grep -q "${KEYFILE_FINAL#/}"; then
-        say "Verified: pool key embedded in the in-pool initramfs (single passphrase prompt)"
+      local img keyless=()
+      for img in "$MNT"/boot/initramfs-*.img; do
+        [[ -e $img ]] || continue
+        arch-chroot "$MNT" lsinitcpio -l "/boot/${img##*/}" 2>/dev/null |
+          grep -q "${KEYFILE_FINAL#/}" || keyless+=("${img##*/}")
+      done
+      if (( ${#keyless[@]} )); then
+        warn "pool key is NOT embedded in ${keyless[*]} — expect a second passphrase prompt at boot"
       else
-        warn "pool key is NOT embedded in the initramfs — expect a second passphrase prompt at boot"
+        say "Verified: pool key embedded in every in-pool initramfs (single passphrase prompt)"
       fi
     fi
     [[ -s "$MNT/etc/hostid" ]] || { warn "target is missing /etc/hostid"; ok=0; }
