@@ -19,7 +19,7 @@ can never silently strip the ZFS layer.
 | `/usr/bin/omarchy-zfs-snapshot` | manual create/restore system snapshots |
 | `/usr/bin/omarchy-zfs-autosnap` | layout-agnostic pre-upgrade snapshots (+ retention) |
 | `/usr/bin/omarchy-zfs-scrub` | `zpool scrub` all pools (monthly timer) |
-| `/usr/bin/omarchy-zfs-kernel-compat-check` | block kernel upgrades zfs-dkms can't build |
+| `/usr/bin/omarchy-zfs-kernel-compat-check` | block kernel installs and upgrades zfs-dkms can't build |
 | `/usr/bin/omarchy-zfs-ensure-mkinitcpio` | **self-heal**: re-assert the `zfs` mkinitcpio hook |
 | `/usr/bin/omarchy-zfs-snapper-guard` | **self-heal**: drop stale non-btrfs snapper configs |
 | `/usr/bin/omarchy-zfs-bootorder-guard` | **self-heal**: keep ZFSBootMenu first in the EFI BootOrder |
@@ -84,6 +84,11 @@ the default instead:
 ```sh
 sudo zfs set org.zfsbootmenu:kernel='vmlinuz-linux$' rpool/omarchy/root
 ```
+
+The kernel guard triggers on `usr/lib/modules/*/vmlinuz`, the path every kernel
+package ships, rather than on a list of package names. The lists went stale
+twice (Omarchy 4.0.4 and 4.5 both added kernels they did not cover), and the
+path carries the exact version of the kernel being installed.
 
 ## Keeping the pool key off the ESP
 

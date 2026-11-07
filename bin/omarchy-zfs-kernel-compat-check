@@ -7,8 +7,11 @@
 # Exits 1 if the check fails — kernel exceeds zfs-dkms's Linux-Maximum.
 #
 # Used by:
-#   - /etc/pacman.d/hooks/90-omarchy-zfs-kernel-guard.hook (PreTransaction, mode=candidate)
-#   - bin/omarchy-refresh-zbm and friends (mode=installed) before invoking mkinitcpio
+#   - /usr/share/libalpm/hooks/90-omarchy-zfs-kernel-guard.hook (PreTransaction, mode=candidate)
+#   - by hand (mode=installed), to ask whether every kernel on disk is covered.
+#     omarchy-refresh-zbm no longer gates on it: omarchy-zfs-boot-images checks
+#     each kernel's module and leaves out the ones without, rather than letting
+#     one uncovered kernel stop the rebuild for the rest.
 #
 # Bypass with OMARCHY_SKIP_ZFS_KERNEL_CHECK=1 if you're absolutely sure (DANGEROUS).
 
@@ -46,15 +49,17 @@ fi
 
 # Resolve which kernels to check.
 #
-# candidate mode reads the triggering package names from stdin (the hook sets
-# NeedsTargets). Before that, this hardcoded `pacman -Si linux` and so read
-# stock linux's version no matter which kernel fired the hook: a machine
-# installing omarchy's linux-omarchy 7.2.5 got an all-clear based on linux
-# 7.0.9, which is precisely the upgrade the guard exists to stop.
+# candidate mode reads the hook's targets from stdin (NeedsTargets). Since
+# 1.2.0 the hook triggers on the path every kernel package ships,
+# usr/lib/modules/<kver>/vmlinuz, so each target names the exact kernel
+# version being installed and no package lookup is needed. The hook used to
+# list kernel packages by name, and every list went stale: Omarchy 4.0.4 added
+# five kernels it did not cover, and 4.5 added linux-omarchy-eevdf. Package
+# names are still accepted for anything that calls this the old way.
 #
 # installed mode enumerates what is actually on disk via each module tree's
 # pkgbase, so a second or third kernel is not skipped.
-kernels=()   # "pkgname<TAB>version" pairs
+kernels=()   # "label<TAB>version" pairs
 
 case "$mode" in
   installed)
@@ -70,10 +75,14 @@ case "$mode" in
     label="candidate kernel"
     # Do not block on a terminal: run by hand there is no target list.
     if [[ ! -t 0 ]]; then
-      while read -r _pkg; do
-        [[ -n $_pkg ]] || continue
-        _ver=$(pacman -Si "$_pkg" 2>/dev/null | awk '/^Version/ {print $3; exit}') || true
-        [[ -n $_ver ]] && kernels+=("$_pkg	$_ver")
+      while read -r _target; do
+        [[ -n $_target ]] || continue
+        if [[ $_target =~ ^usr/lib/modules/([^/]+)/vmlinuz$ ]]; then
+          kernels+=("kernel ${BASH_REMATCH[1]}	${BASH_REMATCH[1]}")
+          continue
+        fi
+        _ver=$(pacman -Si "$_target" 2>/dev/null | awk '/^Version/ {print $3; exit}') || true
+        [[ -n $_ver ]] && kernels+=("$_target	$_ver")
       done
     fi
     # Manual invocation, or a hook without NeedsTargets: fall back to linux.
@@ -123,7 +132,12 @@ for entry in "${kernels[@]}"; do
   # it is compatible regardless of what META claims. git-master's conservative
   # Linux-Maximum otherwise vetoes kernels the module demonstrably builds for —
   # which silently skipped every initramfs regen during ISO installs and
-  # shipped an unbootable target (VM validation, 2026-08-18).
+  # shipped an unbootable target (VM validation, 2026-08-18). A candidate given
+  # by path names its exact module tree, so a reinstall counts too.
+  if [[ $mode == candidate && $pkgver == "${pkgname#kernel }" ]] &&
+     compgen -G "/usr/lib/modules/$pkgver/updates/dkms/zfs.ko*" >/dev/null; then
+    continue
+  fi
   if [[ $mode == installed && -n $target_xyz ]]; then
     _built=0
     for _mdir in /usr/lib/modules/*/; do
@@ -138,7 +152,9 @@ for entry in "${kernels[@]}"; do
   if printf '%s\n%s\n' "$target_xy" "$meta" | sort -V | tail -1 | grep -qFx "$meta"; then
     continue
   fi
-  failed+=("$pkgname $pkgver (needs zfs Linux-Maximum >= $target_xy)")
+  _what="$pkgname $pkgver"
+  [[ $pkgname == "kernel $pkgver" ]] && _what=$pkgname
+  failed+=("$_what (needs zfs Linux-Maximum >= $target_xy)")
 done
 
 (( ${#failed[@]} )) || exit 0
@@ -157,11 +173,13 @@ done
   echo "║  Building zfs against this kernel will fail.                           ║"
   echo "║  Proceeding would leave the system unbootable on next restart.         ║"
   echo "║                                                                        ║"
-  echo "║  To fix, either:                                                       ║"
-  echo "║    1. Update zfs-dkms/zfs-dkms-git to a release whose Linux-Maximum    ║"
-  echo "║       covers this kernel, and rebuild the module, or                   ║"
-  echo "║    2. Do not install this kernel. It is not required: Omarchy's own    ║"
-  echo "║       kernels are optional and nothing depends on them.                ║"
+  echo "║  To fix, update ZFS to a release whose Linux-Maximum covers this       ║"
+  echo "║  kernel, in a transaction of its own, then retry. This check reads     ║"
+  echo "║  the ZFS installed now, so updating both at once still stops here:     ║"
+  echo "║    sudo pacman -S zfs-dkms zfs-utils    (or your AUR helper)           ║"
+  echo "║                                                                        ║"
+  echo "║  Omarchy 4.5 installs linux-omarchy itself and makes it the default,   ║"
+  echo "║  so declining this kernel is no longer an option on Omarchy.           ║"
   echo "║                                                                        ║"
   echo "║  To bypass (DANGEROUS, may produce an unbootable system):              ║"
   echo "║    OMARCHY_SKIP_ZFS_KERNEL_CHECK=1 <command>                           ║"
