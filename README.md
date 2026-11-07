@@ -70,10 +70,11 @@ a kernel or a ZFS package is installed, upgraded or removed.
 Omarchy 4.5 installs its own kernel, `linux-omarchy`, and makes it the default.
 It is a 7.2 kernel, and ZFS only builds for it from OpenZFS 2.4.4
 (`Linux-Maximum: 7.2`). With an older ZFS the kernel guard stops the upgrade.
-Update ZFS first, in its own transaction:
+Update ZFS first, in its own transaction. Keep the `aur/` prefix: `[archzfs]`
+carries an older `zfs-dkms`, and pacman and yay both prefer a repo copy:
 
 ```sh
-sudo pacman -S zfs-dkms zfs-utils    # 2.4.4 or later, from the AUR
+yay -S aur/zfs-dkms aur/zfs-utils    # 2.4.4 or later, from the AUR
 ```
 
 Then `omarchy update` goes through, and `/boot` holds both kernels. ZBM boots
