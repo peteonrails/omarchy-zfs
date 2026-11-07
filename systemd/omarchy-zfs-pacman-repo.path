@@ -1,0 +1,8 @@
+[Unit]
+Description=Watch /etc/pacman.conf for rewrites that drop the omarchy-zfs repo
+
+[Path]
+PathChanged=/etc/pacman.conf
+
+[Install]
+WantedBy=paths.target

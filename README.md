@@ -25,6 +25,7 @@ can never silently strip the ZFS layer.
 | `/usr/bin/omarchy-zfs-bootorder-guard` | **self-heal**: keep ZFSBootMenu first in the EFI BootOrder |
 | `/usr/bin/omarchy-zfs-boot-mounts-setup` | opt pools into `zfs-mount-generator` so datasets mount and keys load at boot |
 | `/usr/bin/omarchy-zfs-module-check` | warn when an installed kernel has no built `zfs.ko` |
+| `/usr/bin/omarchy-zfs-pacman-repo` | **self-heal**: put `[omarchy-zfs]` back in `pacman.conf` when Omarchy rewrites it |
 | `/usr/bin/omarchy-zfs-hibernation-{setup,remove,available}` | ZFS zvol swap hibernation (**experimental**: setup works and the swap inherits pool encryption, but suspend-to-disk is untested here and OpenZFS discourages swap on a zvol) |
 | `/usr/bin/omarchy-bootstrap-zfs` | pool/dataset/ZBM bootstrap (installer/DR) |
 | `/usr/share/libalpm/hooks/00-zfs-autosnap.hook` | PreTransaction snapshot |
@@ -34,10 +35,12 @@ can never silently strip the ZFS layer.
 | `/usr/share/libalpm/hooks/zz-omarchy-zfs-bootorder-guard.hook` | PostTransaction BootOrder self-heal |
 | `/usr/share/libalpm/hooks/zz-omarchy-zfs-module-check.hook` | PostTransaction check that a ZFS module exists for every kernel |
 | `/usr/lib/systemd/system/omarchy-zfs-scrub.{service,timer}` | monthly scrub |
+| `/usr/lib/systemd/system/omarchy-zfs-pacman-repo.{path,service}` | run the repo self-heal whenever `/etc/pacman.conf` changes |
 | `/etc/zfsbootmenu/config.yaml.example`, `hooks/**` | ZBM reference config + branded unlock/theme |
 | `/etc/mkinitcpio.conf.d/zz-omarchy-zfs-hostid.conf` | keep `/etc/hostid` in every initramfs (static, not generated) |
 | `/etc/omarchy-zfs/autosnap.conf` | autosnap tunables |
 | `/etc/omarchy-zfs/bootorder.conf` | boot-order guard opt-out |
+| `/etc/omarchy-zfs/repo.conf` | repo guard opt-out |
 
 ## The boot-safety guarantee
 
@@ -198,6 +201,22 @@ Opt out with `OMARCHY_ZFS_BOOTORDER_GUARD=0` in `/etc/omarchy-zfs/bootorder.conf
 This replaces the earlier warn-only check in the `.install` scriptlet, which
 only ran at package install time and so never fired during the update that
 actually caused the problem.
+
+## The repo guarantee
+
+The signed repo at omarchy-zfs.com is the only way this package updates.
+Omarchy rewrites `/etc/pacman.conf` from its own channel templates on a
+channel switch (`omarchy channel set`) and during install, and that drops
+every repo it did not write. Nothing complains. The machine just stops getting
+omarchy-zfs fixes.
+
+`omarchy-zfs-pacman-repo.path` watches `/etc/pacman.conf`. When it changes,
+`omarchy-zfs-pacman-repo` appends the `[omarchy-zfs]` section if it is missing
+and trusts the release key from the copy the package ships. It never touches
+anything else, so `[archzfs]` and `IgnorePkg` entries a channel switch drops
+stay dropped. Those are yours to put back.
+
+Opt out with `OMARCHY_ZFS_REPO_GUARD=0` in `/etc/omarchy-zfs/repo.conf`.
 
 ### Known residual risk
 

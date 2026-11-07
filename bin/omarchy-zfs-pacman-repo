@@ -1,0 +1,49 @@
+#!/bin/bash
+
+# omarchy:summary=Keep the [omarchy-zfs] repo in /etc/pacman.conf, and its signing key trusted.
+# omarchy:requires-sudo=true
+#
+# The signed repo at omarchy-zfs.com is the package's only distribution
+# channel. Several Omarchy steps rewrite /etc/pacman.conf from its channel
+# templates and drop every repo they did not write: a channel switch
+# (omarchy-refresh-pacman), the first-install step (omarchy-apply-pacman), and
+# any migration that calls either. After that the machine silently stops
+# getting omarchy-zfs updates, fixes included.
+#
+# omarchy-zfs-pacman-repo.path runs this whenever /etc/pacman.conf changes. It
+# only ever appends the section when it is missing, so it does nothing on a
+# file that already has it, and its own write triggers one more run that finds
+# the section and stops. [archzfs] and IgnorePkg entries are not restored:
+# those are the admin's choice, and [archzfs] is stale.
+#
+# Opt out with OMARCHY_ZFS_REPO_GUARD=0 in /etc/omarchy-zfs/repo.conf.
+
+set -euo pipefail
+
+CONF="${OMARCHY_ZFS_PACMAN_CONF:-/etc/pacman.conf}"
+SETTINGS="${OMARCHY_ZFS_REPO_SETTINGS:-/etc/omarchy-zfs/repo.conf}"
+KEY_FILE="${OMARCHY_ZFS_KEY_FILE:-/usr/share/omarchy-zfs/omarchy-zfs.gpg}"
+KEY_FPR="A38BB6838242C1A193FF7D481360E72C018F296D"
+SERVER="https://omarchy-zfs.com/repo/any"
+
+OMARCHY_ZFS_REPO_GUARD=1
+# shellcheck source=/dev/null
+[[ -r $SETTINGS ]] && source "$SETTINGS"
+[[ $OMARCHY_ZFS_REPO_GUARD == 0 ]] && exit 0
+
+[[ -f $CONF ]] || exit 0
+
+# Trust the key before the repo appears, so the first sync can verify the
+# database. Skipped when the keyring is not there yet (an image build, or a
+# pacstrap before pacman-key --init).
+if [[ -z ${OMARCHY_ZFS_SKIP_KEY:-} && -d /etc/pacman.d/gnupg && -r $KEY_FILE ]] &&
+   ! pacman-key --list-keys "$KEY_FPR" &>/dev/null; then
+  pacman-key --add "$KEY_FILE" >/dev/null
+  pacman-key --lsign-key "$KEY_FPR" >/dev/null
+  echo "omarchy-zfs-pacman-repo: trusted the omarchy-zfs release key"
+fi
+
+grep -q '^\[omarchy-zfs\]' "$CONF" && exit 0
+
+printf '\n[omarchy-zfs]\nServer = %s\n' "$SERVER" >> "$CONF"
+echo "omarchy-zfs-pacman-repo: restored [omarchy-zfs] in $CONF"

@@ -99,8 +99,22 @@ WARN
   return 1
 }
 
+_repo_guard() {
+  # Keep [omarchy-zfs] in pacman.conf across Omarchy's rewrites of it (channel
+  # switch, first install). Inside an installer chroot only enable the watcher:
+  # the bootstrap adds the repo itself once Omarchy has written its final
+  # pacman.conf, and an online repo added mid-install could fail an offline
+  # pacman -Sy there.
+  systemctl enable omarchy-zfs-pacman-repo.path &>/dev/null || true
+  if ! systemd-detect-virt --chroot &>/dev/null; then
+    systemctl start omarchy-zfs-pacman-repo.path &>/dev/null || true
+    omarchy-zfs-pacman-repo || true
+  fi
+}
+
 _common() {
   _require_omarchy || true
+  _repo_guard
   if ! _is_zfs_root; then
     echo ":: omarchy-zfs: root is not ZFS -- the boot-safety hooks stay inactive."
     # Not a ZFS root, but there may still be pools carrying /home or data. Those
@@ -163,6 +177,7 @@ omarchy-zfs installed.
   * Snapper self-heal:       zz-omarchy-zfs-snapper-guard.hook (keeps `omarchy update` working)
   * BootOrder self-heal:     zz-omarchy-zfs-bootorder-guard.hook (keeps ZBM first in NVRAM)
   * Monthly scrub:           omarchy-zfs-scrub.timer (enabled)
+  * Repo guard:              omarchy-zfs-pacman-repo.path (keeps [omarchy-zfs] in pacman.conf)
   * ZBM config reference:    /etc/zfsbootmenu/config.yaml.example
   * Hibernation (ZFS zvol):  omarchy-zfs-hibernation-{setup,remove,available}
 
@@ -178,6 +193,7 @@ post_upgrade() {
 
 post_remove() {
   systemctl disable --now omarchy-zfs-scrub.timer &>/dev/null || true
+  systemctl disable --now omarchy-zfs-pacman-repo.path &>/dev/null || true
   local unit
   for unit in limine-snapper-sync.service snapper-cleanup.timer snapper-timeline.timer; do
     systemctl unmask "$unit" &>/dev/null || true

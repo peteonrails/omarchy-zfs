@@ -44,7 +44,7 @@ optdepends=(
   'pv: syncoid transfer progress'
 )
 # autosnap.conf is admin-editable; never clobber it on upgrade.
-backup=('etc/omarchy-zfs/autosnap.conf' 'etc/omarchy-zfs/bootorder.conf')
+backup=('etc/omarchy-zfs/autosnap.conf' 'etc/omarchy-zfs/bootorder.conf' 'etc/omarchy-zfs/repo.conf')
 install="${pkgname}.install"
 # The payload lives alongside the PKGBUILD; dist/publish.sh builds from the
 # tagged working tree and signs the result into the omarchy-zfs.com repo.
@@ -62,7 +62,7 @@ package() {
     omarchy-zfs-snapshot omarchy-zfs-scrub omarchy-zfs-kernel-compat-check
     omarchy-zfs-autosnap omarchy-zfs-ensure-mkinitcpio omarchy-zfs-kernel-install
     omarchy-zfs-snapper-guard omarchy-zfs-bootorder-guard omarchy-zfs-embed-pool-key
-    omarchy-zfs-boot-images
+    omarchy-zfs-boot-images omarchy-zfs-pacman-repo
     omarchy-zfs-module-check omarchy-zfs-boot-mounts-setup
     omarchy-zfs-hibernation-setup omarchy-zfs-hibernation-remove omarchy-zfs-hibernation-available
     omarchy-bootstrap-zfs
@@ -94,6 +94,15 @@ package() {
   install -Dm644 "$S/systemd/omarchy-zfs-scrub.service" "$pkgdir/usr/lib/systemd/system/omarchy-zfs-scrub.service"
   install -Dm644 "$S/systemd/omarchy-zfs-scrub.timer"   "$pkgdir/usr/lib/systemd/system/omarchy-zfs-scrub.timer"
 
+  # Puts [omarchy-zfs] back whenever something rewrites /etc/pacman.conf.
+  install -Dm644 "$S/systemd/omarchy-zfs-pacman-repo.path"    "$pkgdir/usr/lib/systemd/system/omarchy-zfs-pacman-repo.path"
+  install -Dm644 "$S/systemd/omarchy-zfs-pacman-repo.service" "$pkgdir/usr/lib/systemd/system/omarchy-zfs-pacman-repo.service"
+
+  # The release key, for omarchy-zfs-pacman-repo to trust offline. Taken from
+  # the copy embedded in the bootstrap, so there is one source of truth.
+  sed -n '/^-----BEGIN PGP PUBLIC KEY BLOCK-----/,/^-----END PGP PUBLIC KEY BLOCK-----/p' \
+    "$S/bin/omarchy-bootstrap-zfs" | install -Dm644 /dev/stdin "$pkgdir/usr/share/omarchy-zfs/omarchy-zfs.gpg"
+
   # --- ZFSBootMenu config reference + hooks -> /etc/zfsbootmenu ---
   install -Dm644 "$S/zfsbootmenu/config.yaml.example" "$pkgdir/etc/zfsbootmenu/config.yaml.example"
   install -Dm755 "$S/zfsbootmenu/hooks/load-key.d/01-omarchy-unlock.sh" "$pkgdir/etc/zfsbootmenu/hooks/load-key.d/01-omarchy-unlock.sh"
@@ -102,6 +111,7 @@ package() {
   # --- default config -> /etc/omarchy-zfs ---
   install -Dm644 "$S/config/autosnap.conf" "$pkgdir/etc/omarchy-zfs/autosnap.conf"
   install -Dm644 "$S/config/bootorder.conf" "$pkgdir/etc/omarchy-zfs/bootorder.conf"
+  install -Dm644 "$S/config/repo.conf" "$pkgdir/etc/omarchy-zfs/repo.conf"
 
   # ZBM boots kernel+initramfs pairs from /boot; omarchy's limine flow only
   # builds a UKI on the ESP. This preset keeps the plain pair existing.

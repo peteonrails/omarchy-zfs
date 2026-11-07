@@ -1,0 +1,8 @@
+[Unit]
+Description=Restore the omarchy-zfs repo in /etc/pacman.conf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/omarchy-zfs-pacman-repo
+StandardOutput=journal
+StandardError=journal
