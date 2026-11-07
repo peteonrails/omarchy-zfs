@@ -1,6 +1,6 @@
 # Maintainer: Pete Jackson <pete@tern.travel>
 pkgname=omarchy-zfs
-pkgver=1.2.1
+pkgver=1.2.2
 pkgrel=1
 pkgdesc="Root-on-ZFS + ZFSBootMenu support layer for Omarchy Quattro"
 arch=('any')
