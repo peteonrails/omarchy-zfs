@@ -177,11 +177,9 @@ fi
 if ! $NO_REBUILD; then
   echo "Regenerating initramfs..."
   if omarchy-fs-zfs; then
-    omarchy-zfs-kernel-compat-check installed || exit 1
-    sudo "$(command -v /usr/bin/mkinitcpio || echo mkinitcpio)" -P
-    if command -v generate-zbm &>/dev/null; then
-      sudo generate-zbm
-    fi
+    # The ZBM images: every kernel with a ZFS module, pool key embedded. A bare
+    # `mkinitcpio -P` here rebuilt only the preset kernels, without the key.
+    omarchy-refresh-zbm || exit 1
   else
     # limine-mkinitcpio rebuilds initramfs/UKI for all kernels and updates the
     # /boot/limine.conf entries via limine-entry-tool. The limine bootloader

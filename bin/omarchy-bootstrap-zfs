@@ -1128,7 +1128,9 @@ EOF
   # linux-zbm.preset sorts BEFORE linux.preset, so the keyless build landed
   # last and the installed system asked for the passphrase a second time at
   # boot (caught in VM validation of the 2026.08.20 ISO).
-  run arch-chroot "$MNT" omarchy-zfs-embed-pool-key
+  # omarchy-zfs-boot-images also copies each kernel into /boot itself: with
+  # limine-mkinitcpio-hook in the target, nothing else does.
+  run arch-chroot "$MNT" omarchy-zfs-boot-images
 }
 
 # ============================================================================

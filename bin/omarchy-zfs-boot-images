@@ -1,0 +1,200 @@
+#!/bin/bash
+
+# omarchy:summary=Stage every kernel that has a ZFS module in /boot, with its initramfs, for ZFSBootMenu.
+# omarchy:requires-sudo=true
+#
+# ZFSBootMenu boots a BE by kexec'ing a /boot/vmlinuz-* with its matching
+# /boot/initramfs-*.img, read from inside the pool. Nothing else on an Omarchy
+# system puts that pair there. limine-mkinitcpio-hook masks mkinitcpio's own
+# install hook, which is what used to copy vmlinuz into /boot, and builds only
+# UKIs on the ESP. So this script owns the pair, for every installed kernel:
+#
+#   - a kernel with a zfs module gets /boot/vmlinuz-<pkgbase>, copied fresh
+#     from its module tree, and /boot/initramfs-<pkgbase>.img built for it;
+#   - a kernel without one is left out, with a warning. Staging it would hand
+#     ZBM a kernel that cannot import the pool, and ZBM boots the last kernel
+#     in version order unless told otherwise;
+#   - a pair this script staged earlier, for a kernel that has since been
+#     removed or upgraded past its zfs module, is removed, unless it is the
+#     last bootable pair in /boot.
+#
+# Before 1.2.0 this was hardcoded to linux and linux-lts. It never saw
+# Omarchy's own kernel, linux-omarchy, which Omarchy 4.5 installs and makes the
+# default, and it never refreshed /boot/vmlinuz-linux when the stock kernel
+# upgraded: that only stayed correct because the kernel was pinned.
+#
+# The pool keyfile goes into the image when omarchy-zfs-ensure-mkinitcpio found
+# one. ZFSBootMenu unlocks the pool to read /boot, then kexecs, and the
+# target's initramfs has to unlock the pool all over again; with the keyfile
+# inside it does that silently, so there is one passphrase prompt instead of
+# two. The keyed image is built with `mkinitcpio -c` and that standalone config
+# (it ignores conf.d), and the key is verified to have landed. It may only
+# ever live in this image, inside the encrypted pool: omarchy-refresh-zbm
+# checks that it never reached the ESP.
+#
+# Each image is built to a temporary file and moved into place only once it
+# carries zfs.ko (and the key, where there is one). A failed build leaves the
+# previous pair untouched rather than half-written.
+#
+# Invoked by:
+#   - omarchy-refresh-zbm
+#   - omarchy-zfs-embed-pool-key (the pre-1.2.0 name, kept as a shim)
+#   - omarchy-bootstrap-zfs stage 15, inside the target chroot
+
+set -uo pipefail
+
+BOOT="${OMARCHY_ZFS_BOOT_DIR:-/boot}"
+MODULES="${OMARCHY_ZFS_MODULES_DIR:-/usr/lib/modules}"
+STATE="${OMARCHY_ZFS_STATE_DIR:-/var/lib/omarchy-zfs}"
+ZBMCONF="${OMARCHY_ZFS_ZBM_CONF:-/etc/omarchy-zfs/mkinitcpio-zbm.conf}"
+MKINITCPIO="$(command -v /usr/bin/mkinitcpio || echo mkinitcpio)"
+MANIFEST="$STATE/boot-kernels"
+
+say() { echo "omarchy-zfs-boot-images: $*"; }
+warn() { echo "omarchy-zfs-boot-images: $*" >&2; }
+
+# Same test as omarchy-zfs-module-check. modinfo resolves the module the way
+# modprobe will; the DKMS path covers a build that depmod has not indexed yet.
+has_zfs() {
+  local kver="$1"
+  modinfo -k "$kver" zfs &>/dev/null && return 0
+  compgen -G "$MODULES/$kver/updates/dkms/zfs.ko*" >/dev/null
+}
+
+# Only a kernel a package owns counts. Omarchy's linux-modules hooks keep the
+# running kernel's module tree on disk after its package is upgraded or
+# removed, so the running system can still load modules until it reboots. That
+# leftover keeps its pkgbase file and vmlinuz. Staging it handed ZBM a kernel
+# no package provides, and on the first Omarchy 4.5 update it sorted last and
+# became the default: 7.2.8-5-omarchy-bore instead of the 7.2.15 linux-omarchy
+# that replaced it. Test trees under OMARCHY_ZFS_MODULES_DIR are not packaged.
+owned() {
+  [[ $MODULES != /usr/lib/modules ]] || pacman -Qqo "$1" &>/dev/null
+}
+
+keyfile=""
+if [[ -r $ZBMCONF ]]; then
+  keyfile=$(sed -n 's/^FILES+=(\(.*\))$/\1/p' "$ZBMCONF" | tail -1)
+  if [[ -n $keyfile && ! -r $keyfile ]]; then
+    warn "keyfile $keyfile is not readable; building without it (boot will prompt twice)"
+    keyfile=""
+  fi
+fi
+
+# Installed kernels, by pkgbase. A module tree without a pkgbase file, or whose
+# vmlinuz no package owns, is a leftover from a removed or replaced kernel.
+declare -A current=()
+for moddir in "$MODULES"/*/; do
+  [[ -r ${moddir}pkgbase && -e ${moddir}vmlinuz ]] || continue
+  owned "${moddir}vmlinuz" || continue
+  current[$(< "${moddir}pkgbase")]=$(basename "$moddir")
+done
+
+declare -A previous=()
+if [[ -r $MANIFEST ]]; then
+  while read -r pkgbase kver; do
+    [[ -n $pkgbase ]] && previous[$pkgbase]=$kver
+  done < "$MANIFEST"
+fi
+
+mkdir -p "$BOOT" "$STATE"
+
+declare -A staged=()
+rc=0
+for pkgbase in "${!current[@]}"; do
+  kver=${current[$pkgbase]}
+  if ! has_zfs "$kver"; then
+    warn "$pkgbase ($kver) has no zfs module; leaving it out of ZFSBootMenu"
+    continue
+  fi
+
+  kernel="$BOOT/vmlinuz-$pkgbase"
+  image="$BOOT/initramfs-$pkgbase.img"
+  config=()
+  [[ -n $keyfile ]] && config=(-c "$ZBMCONF")
+
+  say "building $image for $kver${keyfile:+ with $keyfile embedded}"
+  if ! "$MKINITCPIO" "${config[@]}" -k "$kver" -g "$image.new"; then
+    warn "mkinitcpio failed for $pkgbase ($kver); keeping the previous image"
+    rm -f "$image.new"
+    rc=1
+    continue
+  fi
+
+  # Verify rather than assume. An image without zfs.ko cannot import the pool,
+  # and a keyless one is a second passphrase prompt.
+  listing=$(lsinitcpio -l "$image.new" 2>/dev/null)
+  if ! grep -qE '/zfs\.ko(\.[a-z]+)?$' <<<"$listing"; then
+    warn "$image.new has no zfs.ko; keeping the previous image"
+    rm -f "$image.new"
+    rc=1
+    continue
+  fi
+  if [[ -n $keyfile ]] && ! grep -qx "${keyfile#/}" <<<"$listing"; then
+    warn "${keyfile#/} did not land in $image.new; keeping the previous image"
+    rm -f "$image.new"
+    rc=1
+    continue
+  fi
+
+  chmod 600 "$image.new"
+  install -m644 "$MODULES/$kver/vmlinuz" "$kernel.new"
+  mv -f "$kernel.new" "$kernel"
+  mv -f "$image.new" "$image"
+  staged[$pkgbase]=$kver
+  say "staged $kernel and $image${keyfile:+ (key verified)}"
+done
+
+# Remove pairs this script staged for kernels that no longer have a module
+# tree with zfs in it, but never the last bootable pair: an out-of-date kernel
+# that still boots the pool beats an empty /boot.
+declare -A kept=()
+for pkgbase in "${!previous[@]}"; do
+  [[ -v staged[$pkgbase] ]] && continue
+  kver=${previous[$pkgbase]}
+  # Still installed with a module, so its build failed this time: keep the
+  # pair from the last good build.
+  if [[ -e $MODULES/$kver/vmlinuz ]] && owned "$MODULES/$kver/vmlinuz" && has_zfs "$kver"; then
+    kept[$pkgbase]=$kver
+    continue
+  fi
+  why="$kver is gone"
+  if [[ -e $MODULES/$kver/vmlinuz ]] && ! owned "$MODULES/$kver/vmlinuz"; then
+    why="no package owns $kver any more"
+  elif [[ -d $MODULES/$kver ]]; then
+    why="$kver has no zfs module"
+  fi
+  if (( ${#staged[@]} == 0 )); then
+    warn "$BOOT/vmlinuz-$pkgbase is stale ($why) but nothing else is staged; keeping it"
+    kept[$pkgbase]=$kver
+    continue
+  fi
+  say "removing $BOOT/vmlinuz-$pkgbase and its initramfs ($why)"
+  rm -f "$BOOT/vmlinuz-$pkgbase" "$BOOT/initramfs-$pkgbase.img"
+done
+
+{
+  for pkgbase in "${!staged[@]}"; do printf '%s %s\n' "$pkgbase" "${staged[$pkgbase]}"; done
+  for pkgbase in "${!kept[@]}"; do printf '%s %s\n' "$pkgbase" "${kept[$pkgbase]}"; done
+} | sort > "$MANIFEST.new" && mv -f "$MANIFEST.new" "$MANIFEST"
+
+if (( ${#staged[@]} == 0 )); then
+  warn "no kernel with a zfs module was staged; ZFSBootMenu has nothing new to boot"
+  exit 1
+fi
+
+# Say which kernel ZFSBootMenu will pick, using its own rule: every
+# /boot/{vm,}linu{x,z}{,-*} with a matching initramfs, in `sort -V` order, the
+# last one wins unless org.zfsbootmenu:kernel names another.
+default=$(for k in "$BOOT"/{vm,}linu{x,z}{,-*}; do
+            [[ -e $k && $k != *.new ]] || continue
+            [[ -e $BOOT/initramfs-${k##*/vmlinuz-}.img ]] && echo "${k##*/}"
+          done | sort -V | tail -1)
+pin=$(zfs get -H -o value org.zfsbootmenu:kernel "$(findmnt -n -o SOURCE / 2>/dev/null)" 2>/dev/null)
+if [[ -n $pin && $pin != "-" ]]; then
+  say "ZFSBootMenu default kernel: the one matching org.zfsbootmenu:kernel=$pin"
+elif [[ -n $default ]]; then
+  say "ZFSBootMenu default kernel: $default (pick another from its menu, or pin one with org.zfsbootmenu:kernel)"
+fi
+
+exit $rc

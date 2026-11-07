@@ -4,9 +4,14 @@
 # which replaces omarchy's HOOKS drop-in with the stock (zfs-less) version;
 # the kernel package's own 90-mkinitcpio-install hook then rebuilds the
 # initramfs without zfs -> unbootable root. The zz- prefix makes this run
-# LAST (after 90-mkinitcpio-install and any limine hook), so our regen wins.
+# LAST (after 90-mkinitcpio-install, 70-dkms-install and any limine hook), so
+# our regen wins and sees the freshly built zfs.ko.
 #
-# The script is a cheap no-op when nothing changed the effective HOOKS line.
+# It also keeps the ZFSBootMenu pairs in /boot current. A kernel installed,
+# upgraded or removed, or a ZFS package that rebuilt zfs.ko or replaced the
+# initcpio hook, leaves /boot holding something that no longer matches, so
+# those targets force a rebuild (--hook tells the script to read them). A
+# config change alone rebuilds only when the derived HOOKS or ZBM config moved.
 
 [Trigger]
 Operation = Install
@@ -14,10 +19,27 @@ Operation = Upgrade
 Type = Path
 Target = etc/mkinitcpio.conf.d/omarchy_hooks.conf
 Target = etc/mkinitcpio.conf
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Path
 Target = usr/lib/modules/*/vmlinuz
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = zfs-dkms
+Target = zfs-dkms-git
+Target = zfs-linux
+Target = zfs-linux-lts
+Target = zfs-utils
+Target = zfs-utils-git
 
 [Action]
 Description = Ensuring ZFS hook is present in initramfs (omarchy-zfs)...
 When = PostTransaction
-Exec = /usr/bin/omarchy-zfs-ensure-mkinitcpio
+Exec = /usr/bin/omarchy-zfs-ensure-mkinitcpio --hook
 NeedsTargets

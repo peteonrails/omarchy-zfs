@@ -14,7 +14,8 @@ can never silently strip the ZFS layer.
 |---|---|
 | `/usr/bin/omarchy-fs-{type,zfs,btrfs}` | root-filesystem detection |
 | `/usr/bin/omarchy-cmdline-add` | bootloader-agnostic kernel cmdline edits (ZBM property on ZFS) |
-| `/usr/bin/omarchy-refresh-zbm` | guarded `mkinitcpio -P` + `generate-zbm` |
+| `/usr/bin/omarchy-refresh-zbm` | rebuild the ZBM boot images + `generate-zbm`, then check the ESP for pool keys |
+| `/usr/bin/omarchy-zfs-boot-images` | stage `/boot/vmlinuz-*` + keyed initramfs for every kernel with a ZFS module |
 | `/usr/bin/omarchy-zfs-snapshot` | manual create/restore system snapshots |
 | `/usr/bin/omarchy-zfs-autosnap` | layout-agnostic pre-upgrade snapshots (+ retention) |
 | `/usr/bin/omarchy-zfs-scrub` | `zpool scrub` all pools (monthly timer) |
@@ -50,6 +51,39 @@ derives the effective `HOOKS` line, inserts `zfs` before `filesystems`, writes
 it to our own `zz-omarchy-zfs.conf` drop-in (which sorts after — and therefore
 overrides — `omarchy_hooks.conf`), and regenerates the initramfs + ZBM. Upstream
 hook additions are inherited automatically; we only guarantee `zfs` placement.
+
+## The kernel guarantee
+
+ZFSBootMenu boots a kernel and initramfs pair from `/boot` inside the pool. On
+Omarchy nothing else puts that pair there: `limine-mkinitcpio-hook` masks
+mkinitcpio's install hook, which is what used to copy `vmlinuz` into `/boot`,
+and builds only UKIs on the ESP.
+
+`omarchy-zfs-boot-images` owns the pair. For every installed kernel that has a
+ZFS module it copies `/boot/vmlinuz-<pkgbase>` from the module tree and builds
+`/boot/initramfs-<pkgbase>.img`, with the pool key embedded and verified. A
+kernel without a ZFS module is left out with a warning, because ZBM would offer
+a kernel that cannot import the pool. A pair it staged for a kernel that is
+gone is removed, unless it is the last one. The self-heal hook runs it whenever
+a kernel or a ZFS package is installed, upgraded or removed.
+
+Omarchy 4.5 installs its own kernel, `linux-omarchy`, and makes it the default.
+It is a 7.2 kernel, and ZFS only builds for it from OpenZFS 2.4.4
+(`Linux-Maximum: 7.2`). With an older ZFS the kernel guard stops the upgrade.
+Update ZFS first, in its own transaction:
+
+```sh
+sudo pacman -S zfs-dkms zfs-utils    # 2.4.4 or later, from the AUR
+```
+
+Then `omarchy update` goes through, and `/boot` holds both kernels. ZBM boots
+the last kernel in `sort -V` order, so `vmlinuz-linux-omarchy` becomes the
+default and the stock kernel stays in its menu. To keep the stock kernel as
+the default instead:
+
+```sh
+sudo zfs set org.zfsbootmenu:kernel='vmlinuz-linux$' rpool/omarchy/root
+```
 
 ## Keeping the pool key off the ESP
 

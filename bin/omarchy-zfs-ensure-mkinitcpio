@@ -31,6 +31,25 @@ CONFD="${OMARCHY_ZFS_CONFD:-/etc/mkinitcpio.conf.d}"
 MAIN="${OMARCHY_ZFS_CONF:-/etc/mkinitcpio.conf}"
 DRYRUN="${OMARCHY_ZFS_DRYRUN:-0}"
 
+# --hook: run by zz-omarchy-zfs-ensure-mkinitcpio.hook, which passes the
+# matched targets on stdin. Only then is stdin read: the .install calls this
+# too, and there stdin is whatever pacman was given, possibly `yes`.
+#
+# A config change alone only needs a rebuild when the derived files change,
+# which the stamp below detects. A kernel installed, upgraded or removed, or a
+# ZFS package that rebuilt zfs.ko or the initcpio hook, always does: /boot then
+# holds a kernel or module that no longer matches. Before 1.2.0 this hook fired
+# on a kernel upgrade, saw the config unchanged, and left /boot as it was.
+force="${OMARCHY_ZFS_FORCE_REGEN:-}"
+if [[ ${1:-} == "--hook" ]]; then
+  while read -r target; do
+    case "$target" in
+      "" | etc/mkinitcpio.conf | etc/mkinitcpio.conf.d/omarchy_hooks.conf) ;;
+      *) force=1 ;;
+    esac
+  done
+fi
+
 # Non-ZFS systems never touch initramfs from here (skipped under dry-run so the
 # transform can be exercised on any host).
 if [[ "$DRYRUN" != "1" ]]; then
@@ -57,7 +76,7 @@ if [[ -f $LEGACY_KEYS ]] && ! pacman -Qo "$LEGACY_KEYS" &>/dev/null &&
    ! grep -qvE '^[[:space:]]*(#.*)?$|^FILES\+=\(/etc/zfs/keys/[^)]*\)$' "$LEGACY_KEYS"; then
   rm -f "$LEGACY_KEYS"
   echo "omarchy-zfs-ensure-mkinitcpio: removed legacy $LEGACY_KEYS (it put the pool key on the ESP)"
-  OMARCHY_ZFS_FORCE_REGEN=1
+  force=1
 fi
 
 # Derive the EFFECTIVE hooks by evaluating the config chain exactly the way
@@ -191,40 +210,20 @@ if [[ "$DRYRUN" == "1" ]]; then
   exit 0
 fi
 
-# Nothing changed in the hook list and the ZBM config was rewritten
-# identically -> the images on disk are already correct. Skip the expensive
-# rebuild (this hook runs after EVERY pacman transaction).
-if (( unchanged )) && [[ -z ${OMARCHY_ZFS_FORCE_REGEN:-} ]] &&
+# Nothing changed in the hook list, the ZBM config was rewritten identically,
+# and no kernel or ZFS package moved -> the images on disk are already correct.
+# Skip the expensive rebuild.
+if (( unchanged )) && [[ -z $force ]] &&
    cmp -s "$ZBMCONF" "$ZBMCONF.stamp" 2>/dev/null; then
   exit 0
 fi
 cp -f "$ZBMCONF" "$ZBMCONF.stamp" 2>/dev/null || true
 
-# Regenerate initramfs and refresh ZBM. omarchy-refresh-zbm already runs the
-# kernel/zfs-dkms compat check, `mkinitcpio -P`, and generate-zbm, so defer to
-# it and only fall back to the raw commands if it isn't on PATH.
+# Rebuild the boot images and refresh ZBM. omarchy-refresh-zbm stages every
+# kernel that has a ZFS module, regenerates ZBM and checks the ESP for the pool
+# key; it ships in this package, so the fallback is only for a partial install.
 if command -v omarchy-refresh-zbm &>/dev/null; then
   omarchy-refresh-zbm
 else
-  if command -v omarchy-zfs-kernel-compat-check &>/dev/null; then
-    omarchy-zfs-kernel-compat-check installed || {
-      echo "omarchy-zfs-ensure-mkinitcpio: kernel/zfs-dkms incompatible, skipping regen" >&2
-      exit 0
-    }
-  fi
-  echo "Regenerating initramfs"
-  "$(command -v /usr/bin/mkinitcpio || echo mkinitcpio)" -P
-  # mkinitcpio -P alone does not put the pool key back: which preset wins is
-  # locale-dependent (C collation sorts linux-zbm.preset before linux.preset),
-  # so the embed is an explicit step. omarchy-refresh-zbm does this on the
-  # branch above; without it here, a regen on this path silently costs the
-  # single-passphrase boot.
-  if command -v omarchy-zfs-embed-pool-key &>/dev/null; then
-    omarchy-zfs-embed-pool-key ||
-      echo "omarchy-zfs-ensure-mkinitcpio: could not embed the pool key (boot will prompt twice)" >&2
-  fi
-  if command -v generate-zbm &>/dev/null; then
-    echo "Regenerating ZFSBootMenu"
-    generate-zbm
-  fi
+  omarchy-zfs-boot-images
 fi

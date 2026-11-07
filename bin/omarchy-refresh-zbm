@@ -1,29 +1,24 @@
 #!/bin/bash
 
-# omarchy:summary=Rebuild initramfs and regenerate ZFSBootMenu if available.
+# omarchy:summary=Rebuild the ZFSBootMenu boot images and regenerate ZFSBootMenu if available.
 # omarchy:requires-sudo=true
-
-# Defensive: refuse to rebuild if zfs-dkms can't build for the installed kernel.
-# An mkinitcpio -P run without a working zfs.ko produces an unbootable initramfs.
-omarchy-zfs-kernel-compat-check installed || exit 1
 
 status=0
 
-echo "Rebuilding initramfs"
-sudo "$(command -v /usr/bin/mkinitcpio || echo mkinitcpio)" -P
-
-# -P has just rewritten /boot/initramfs-<kernel>.img from the stock config, so
-# re-embed the pool keyfile explicitly. This MUST come after -P: both configs
-# target the same image path, and leaving the winner to preset glob order made
-# it locale-dependent (C collation sorts linux-zbm.preset before linux.preset,
-# so the keyless image won and the install prompted for the passphrase twice).
-if command -v omarchy-zfs-embed-pool-key &>/dev/null; then
-  sudo omarchy-zfs-embed-pool-key || echo "omarchy-refresh-zbm: could not embed the pool key (boot will prompt twice)" >&2
-fi
+# Stage /boot/vmlinuz-<kernel> and build its initramfs for every installed
+# kernel that has a zfs module, leaving out the ones that do not. This used to
+# gate on `omarchy-zfs-kernel-compat-check installed` and then run
+# `mkinitcpio -P`, so a single kernel ZFS could not build for vetoed the
+# rebuild of all the others: with Omarchy's linux-omarchy installed beside a
+# ZFS that stopped at 7.0, the stock kernel's image was never refreshed either.
+# omarchy-zfs-boot-images checks each kernel's module instead, which is the
+# stronger evidence anyway.
+echo "Rebuilding ZFSBootMenu boot images"
+sudo omarchy-zfs-boot-images || status=1
 
 if command -v generate-zbm &>/dev/null; then
   echo "Regenerating ZFSBootMenu"
-  sudo generate-zbm
+  sudo generate-zbm || status=1
 fi
 
 # The in-pool initramfs may embed a pool keyfile so the kexec'd kernel can

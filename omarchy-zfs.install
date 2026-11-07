@@ -157,9 +157,13 @@ POOLS
   if command -v omarchy-zfs-snapper-guard &>/dev/null; then
     omarchy-zfs-snapper-guard || true
   fi
-  # Re-assert the zfs mkinitcpio hook and regenerate initramfs + ZBM.
+  # Re-assert the zfs mkinitcpio hook and rebuild the boot images + ZBM.
+  # Forced: a new package version can change how the images are built (1.2.0
+  # began staging every kernel with a ZFS module, Omarchy's included), and the
+  # stamp only notices config changes. stdin is closed so the script never
+  # reads whatever pacman was fed, such as `yes`.
   if command -v omarchy-zfs-ensure-mkinitcpio &>/dev/null; then
-    omarchy-zfs-ensure-mkinitcpio || true
+    OMARCHY_ZFS_FORCE_REGEN=1 omarchy-zfs-ensure-mkinitcpio </dev/null || true
   fi
   systemctl enable --now omarchy-zfs-scrub.timer &>/dev/null || true
   _guard_bootorder
