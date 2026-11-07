@@ -1014,11 +1014,27 @@ EOF
     return 0
   fi
   if arch-chroot "$MNT" bash -c 'command -v generate-zbm' &>/dev/null; then
+    # generate-zbm builds ZBM around a kernel it finds in /boot, and nothing
+    # has put one there yet: limine-mkinitcpio-hook masks mkinitcpio's install
+    # hook. Stage the target's kernels first (stage 15 rebuilds them keyed).
+    arch-chroot "$MNT" omarchy-zfs-boot-images >/dev/null 2>&1 ||
+      warn "could not stage a kernel in the target's /boot before generate-zbm"
     say "Generating branded ZFSBootMenu in the target (generate-zbm)"
-    if arch-chroot "$MNT" generate-zbm && [[ -s "$zbm_dir/vmlinuz.EFI" ]]; then
-      return 0
+    if arch-chroot "$MNT" generate-zbm; then
+      # The image is named after that kernel (ZBM 3.1.0 wrote
+      # vmlinuz-linux.EFI), but the EFI entry points at vmlinuz.EFI. Take the
+      # newest non-backup image under whatever name it got.
+      local built="" f
+      for f in "$zbm_dir"/vmlinuz*.EFI; do
+        [[ -s $f && ${f,,} != *-backup* ]] || continue
+        [[ -z $built || $f -nt $built ]] && built=$f
+      done
+      if [[ -n $built ]]; then
+        [[ $built == "$zbm_dir/vmlinuz.EFI" ]] || run cp -f "$built" "$zbm_dir/vmlinuz.EFI"
+        return 0
+      fi
     fi
-    warn "generate-zbm did not produce $zbm_dir/vmlinuz.EFI — falling back to the prebuilt image"
+    warn "generate-zbm did not produce an image in $zbm_dir — falling back to the prebuilt image"
   fi
 
   # Fallback: prebuilt release EFI — bundled on the omarchy-zfs ISO, fetched
