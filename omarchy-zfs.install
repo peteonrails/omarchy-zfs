@@ -2,29 +2,8 @@
 # Runs as root; no sudo needed. All internal pacman calls set
 # OMARCHY_ALLOW_DIRECT_PACMAN=1 so the Quattro update guard doesn't reject them.
 
-ARCHZFS_KEY="DDF7DB817396A49B2A2723F7403BD972F75D9D76"
-
 _is_zfs_root() {
   [[ "$(findmnt -n -o FSTYPE / 2>/dev/null || true)" == "zfs" ]]
-}
-
-_configure_archzfs() {
-  # Skip if some ZFS-providing repo is already configured.
-  if grep -qE '^\[(archzfs|cachyos|cachyos-v3|cachyos-v4|chaotic-aur)\]' /etc/pacman.conf; then
-    return 0
-  fi
-  echo ":: omarchy-zfs: configuring [archzfs] package source"
-  if ! pacman-key --list-keys "$ARCHZFS_KEY" &>/dev/null; then
-    pacman-key --recv-keys "$ARCHZFS_KEY" || return 0
-    pacman-key --lsign-key "$ARCHZFS_KEY" || return 0
-  fi
-  cat >>/etc/pacman.conf <<'EOF'
-
-# Added by omarchy-zfs -- canonical ZFS package source
-[archzfs]
-Server = https://archzfs.com/$repo/$arch
-EOF
-  OMARCHY_ALLOW_DIRECT_PACMAN=1 pacman -Sy --noconfirm || true
 }
 
 _ensure_hostid() {
@@ -148,7 +127,10 @@ POOLS
     return 0
   fi
   _cleanup_legacy_unowned
-  _configure_archzfs
+  # No more [archzfs]. This used to add it to every ZFS root, but its zfs-dkms
+  # is stuck at 2.3.3, which builds for no 7.x kernel, and pacman and yay both
+  # prefer a repo copy over the AUR's current one. An existing [archzfs] entry
+  # is left alone: removing someone's repo is their call.
   _ensure_hostid
   _mask_snapper_units
   # Drop the stale btrfs snapper config omarchy's installer leaves behind --
