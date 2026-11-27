@@ -172,7 +172,7 @@ post_install() {
 
 omarchy-zfs installed.
   * Pre-upgrade snapshots:   00-zfs-autosnap.hook (config: /etc/omarchy-zfs/autosnap.conf)
-  * Kernel/zfs-dkms guard:   90-omarchy-zfs-kernel-guard.hook
+  * Kernel/zfs-dkms guard:   00-omarchy-zfs-kernel-guard.hook
   * Initramfs self-heal:     zz-omarchy-zfs-ensure-mkinitcpio.hook (runs after every upgrade)
   * Snapper self-heal:       zz-omarchy-zfs-snapper-guard.hook (keeps `omarchy update` working)
   * BootOrder self-heal:     zz-omarchy-zfs-bootorder-guard.hook (keeps ZBM first in NVRAM)

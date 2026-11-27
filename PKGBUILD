@@ -75,7 +75,7 @@ package() {
   # --- pacman/libalpm hooks -> /usr/share/libalpm/hooks ---
   local hooks=(
     00-zfs-autosnap.hook
-    90-omarchy-zfs-kernel-guard.hook
+    00-omarchy-zfs-kernel-guard.hook
     zz-omarchy-zfs-ensure-mkinitcpio.hook
     zz-omarchy-zfs-snapper-guard.hook
     zz-omarchy-zfs-bootorder-guard.hook
