@@ -9,7 +9,7 @@
 # X.Y version is <= that maximum -- from the repos, the local pacman cache, or
 # the Arch Linux Archive (archive.archlinux.org) when the repos have outrun ZFS
 # -- installs it + headers, pins them via IgnorePkg, and rebuilds the initramfs
-# and ZBM. The 90-omarchy-zfs-kernel-guard hook then blocks any future -Syu that
+# and ZBM. The 00-omarchy-zfs-kernel-guard hook then blocks any future -Syu that
 # would push the kernel past ZFS support.
 #
 # Idempotent-ish: safe to re-run; only changes the kernel when needed.

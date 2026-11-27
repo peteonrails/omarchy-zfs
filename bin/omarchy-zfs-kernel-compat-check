@@ -7,7 +7,7 @@
 # Exits 1 if the check fails — kernel exceeds zfs-dkms's Linux-Maximum.
 #
 # Used by:
-#   - /usr/share/libalpm/hooks/90-omarchy-zfs-kernel-guard.hook (PreTransaction, mode=candidate)
+#   - /usr/share/libalpm/hooks/00-omarchy-zfs-kernel-guard.hook (PreTransaction, mode=candidate)
 #   - by hand (mode=installed), to ask whether every kernel on disk is covered.
 #     omarchy-refresh-zbm no longer gates on it: omarchy-zfs-boot-images checks
 #     each kernel's module and leaves out the ones without, rather than letting
@@ -180,8 +180,10 @@ done
   echo "║  Keep the aur/ prefix. [archzfs] carries an older zfs-dkms, and        ║"
   echo "║  without the prefix pacman and yay both prefer the repo copy.          ║"
   echo "║                                                                        ║"
-  echo "║  Omarchy 4.5 installs linux-omarchy itself and makes it the default,   ║"
-  echo "║  so declining this kernel is no longer an option on Omarchy.           ║"
+  echo "║  If no ZFS release covers this kernel yet, hold the kernel until one   ║"
+  echo "║  does. Add it and its headers to IgnorePkg in /etc/pacman.conf, then   ║"
+  echo "║  retry. omarchy update honors it and updates everything else:          ║"
+  echo "║    IgnorePkg = linux-omarchy linux-omarchy-headers                     ║"
   echo "║                                                                        ║"
   echo "║  To bypass (DANGEROUS, may produce an unbootable system):              ║"
   echo "║    OMARCHY_SKIP_ZFS_KERNEL_CHECK=1 <command>                           ║"

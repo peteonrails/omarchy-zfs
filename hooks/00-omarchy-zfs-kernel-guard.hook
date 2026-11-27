@@ -11,6 +11,15 @@
 # image and nothing else. Path triggers on Install/Upgrade match the files in
 # the incoming package, so this runs before the new kernel lands.
 #
+# The 00- name is load-bearing. libalpm runs PreTransaction hooks in filename
+# order, and an abort only stops the hooks that sort after it. This hook was
+# 90- through 1.2.3, behind mkinitcpio's 60-mkinitcpio-remove and dkms's
+# 71-dkms-remove, which fire for the outgoing kernel on the same upgrade. Every
+# blocked update had already deleted the running kernel's /boot images and its
+# zfs.ko, so the guard left the machine one reboot from the state it exists to
+# prevent. It also sorts ahead of 00-zfs-autosnap, so a blocked update does not
+# take a snapshot and prune an old one on every retry.
+#
 # NeedsTargets passes the matched paths on stdin. Each one carries the exact
 # kernel version (usr/lib/modules/7.2.15-2-omarchy/vmlinuz), so the check reads
 # the version of the kernel actually being installed.

@@ -29,7 +29,7 @@ can never silently strip the ZFS layer.
 | `/usr/bin/omarchy-zfs-hibernation-{setup,remove,available}` | ZFS zvol swap hibernation (**experimental**: setup works and the swap inherits pool encryption, but suspend-to-disk is untested here and OpenZFS discourages swap on a zvol) |
 | `/usr/bin/omarchy-bootstrap-zfs` | pool/dataset/ZBM bootstrap (installer/DR) |
 | `/usr/share/libalpm/hooks/00-zfs-autosnap.hook` | PreTransaction snapshot |
-| `/usr/share/libalpm/hooks/90-omarchy-zfs-kernel-guard.hook` | PreTransaction kernel guard |
+| `/usr/share/libalpm/hooks/00-omarchy-zfs-kernel-guard.hook` | PreTransaction kernel guard |
 | `/usr/share/libalpm/hooks/zz-omarchy-zfs-ensure-mkinitcpio.hook` | PostTransaction self-heal |
 | `/usr/share/libalpm/hooks/zz-omarchy-zfs-snapper-guard.hook` | PostTransaction snapper self-heal |
 | `/usr/share/libalpm/hooks/zz-omarchy-zfs-bootorder-guard.hook` | PostTransaction BootOrder self-heal |
@@ -89,10 +89,36 @@ the default instead:
 sudo zfs set org.zfsbootmenu:kernel='vmlinuz-linux$' rpool/omarchy/root
 ```
 
+When `linux-omarchy` moves to a series no ZFS release supports yet, the guard
+stops the upgrade and there is no newer ZFS to install. Hold the kernel instead.
+`omarchy update` honors `IgnorePkg` and updates everything else:
+
+```sh
+# /etc/pacman.conf, [options]
+IgnorePkg = linux-omarchy linux-omarchy-headers
+```
+
+Take them back out once `grep Linux-Maximum /usr/src/zfs-*/META` covers the new
+series. `omarchy refresh pacman` (channel switches, `omarchy reinstall`)
+rewrites `pacman.conf`, so put the line back from a
+`~/.config/omarchy/hooks/pre-refresh-pacman.d/` hook if you use those.
+
 The kernel guard triggers on `usr/lib/modules/*/vmlinuz`, the path every kernel
 package ships, rather than on a list of package names. The lists went stale
 twice (Omarchy 4.0.4 and 4.5 both added kernels they did not cover), and the
 path carries the exact version of the kernel being installed.
+
+It is named `00-` so it runs first. libalpm runs PreTransaction hooks in
+filename order, and mkinitcpio's `60-mkinitcpio-remove` and dkms's
+`71-dkms-remove` fire for the outgoing kernel on the same upgrade. Through 1.2.3
+the guard was `90-` and aborted after both, so a blocked update had already
+deleted the running kernel's `/boot` images and `zfs.ko`. If you hit that on an
+older version, reinstall the running kernel from the cache before rebooting.
+That rebuilds the module, the UKI and the ZBM images:
+
+```sh
+sudo pacman -U /var/cache/pacman/pkg/linux-omarchy{,-headers}-"$(pacman -Q linux-omarchy | cut -d' ' -f2)"-x86_64.pkg.tar.zst
+```
 
 ## Keeping the pool key off the ESP
 
